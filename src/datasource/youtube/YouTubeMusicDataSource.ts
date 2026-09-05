@@ -582,7 +582,7 @@ export class YouTubeMusicDataSource extends DataSource {
           retrieve_innertube_config: false,
         });
 
-        return Innertube.create({
+        const client = await Innertube.create({
           fetch: tauriFetch,
           retrieve_player: true,
           generate_session_locally: false,
@@ -590,6 +590,8 @@ export class YouTubeMusicDataSource extends DataSource {
           visitor_data: bootstrap.session.context.client.visitorData,
           client_type: ClientType.MUSIC,
         });
+        await this.refreshMusicClientMetadata(client);
+        return client;
       })();
     }
 
@@ -5590,6 +5592,7 @@ export class YouTubeMusicDataSource extends DataSource {
   ): Promise<{ url: string; mimeType: string; cookie?: string }> {
     let streamUrl: string | null = null;
     let streamMimeType = "audio/mp4";
+    let usedLabel: ClientLabel | null = null;
 
     /*
      * The walk itself holds no policy — the order is handed in. Whichever client comes first is
@@ -5600,10 +5603,7 @@ export class YouTubeMusicDataSource extends DataSource {
       try {
         const resolveWithClient = async (): Promise<void> => {
           const yt = await this.getClient(label);
-          // Only the download client is attested; music and web are fallbacks whose URLs are
-          // gated at 1 MiB regardless, and minting for them would just be wasted work.
-          const poToken =
-            label === "download" ? await this.attestForTrack(yt, track.id) : undefined;
+          const poToken = await this.attestForTrack(yt, track.id);
           const info = await yt.getBasicInfo(track.id, poToken ? { po_token: poToken } : undefined);
           /*
            * MP4 preferred, any audio accepted.
@@ -5653,14 +5653,13 @@ export class YouTubeMusicDataSource extends DataSource {
            * here still carries an untransformed throttling `n` and no `pot`. Taking it as-is is
            * why downloads 403'd while playback — which goes through getStreamingData — worked.
            *
-           * Locked end-to-end for the download client (see withDownloadLock): `decipher` reads
-           * `yt.session.player.po_token`, the same mutable field `attestForTrack` above just
-           * wrote — the only place youtubei.js keeps it, with no parameter to pass it through
-           * instead. Without the lock, a concurrent resolve for another track (routine: the next
-           * track warms while this one is still loading) can mint and overwrite that field in
-           * the gap, and this track's URL goes out stamped with a token bound to a different
-           * video. googlevideo serves such a URL's first ~1 MiB — the same grace an unattested
-           * request gets — then refuses the rest.
+           * Locked end-to-end (see withDownloadLock): `decipher` reads `yt.session.player.po_token`,
+           * the same mutable field `attestForTrack` above just wrote — the only place youtubei.js
+           * keeps it, with no parameter to pass it through instead. Without the lock, a concurrent
+           * resolve for another track (routine: the next track warms while this one is still loading)
+           * can mint and overwrite that field in the gap, and this track's URL goes out stamped with
+           * a token bound to a different video. googlevideo serves such a URL's first ~1 MiB — the
+           * same grace an unattested request gets — then refuses the rest.
            */
           const decipheredUrl = this.withSessionClientVersion(
             await format.decipher(yt.session.player),
@@ -5672,6 +5671,7 @@ export class YouTubeMusicDataSource extends DataSource {
 
           streamUrl = decipheredUrl;
           streamMimeType = (format as any).mime_type ?? "audio/mp4";
+          usedLabel = label;
           logInternalInfo("YouTubeMusicDataSource.getStreamData format selected", {
             trackId: track.id,
             client: label,
@@ -5682,11 +5682,7 @@ export class YouTubeMusicDataSource extends DataSource {
           });
         };
 
-        if (label === "download") {
-          await this.withDownloadLock(resolveWithClient);
-        } else {
-          await resolveWithClient();
-        }
+        await this.withDownloadLock(resolveWithClient);
         break;
       } catch (error) {
         logInternalWarn("YouTubeMusicDataSource.getStreamData client failed", {
@@ -5704,7 +5700,7 @@ export class YouTubeMusicDataSource extends DataSource {
     return {
       url: streamUrl,
       mimeType: streamMimeType,
-      cookie: this.musicCookie ?? undefined,
+      cookie: usedLabel === "music" ? (this.musicCookie ?? undefined) : undefined,
     };
   }
 
