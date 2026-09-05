@@ -951,7 +951,15 @@ export class PlayerController {
 
     await this.playTrackById(track.id);
     if (position > 0 && this.loadedTrackId === track.id) {
-      await this.seekTo(position);
+      try {
+        await this.seekTo(position);
+      } catch (seekError) {
+        logInternalWarn("PlayerController.prematureEnd seek recovery failed", {
+          trackId: track.id,
+          positionSec: Math.round(position),
+          error: getErrorMessage(seekError),
+        });
+      }
     }
     return true;
   }
