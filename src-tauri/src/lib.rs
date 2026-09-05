@@ -3929,7 +3929,14 @@ async fn fill_media_buffer(
                             }
                         }
                         Ok(response) => {
-                            last = cache_error(format!("range returned {}", response.status()));
+                            let status = response.status();
+                            let reason = response
+                                .headers()
+                                .get("x-goog-reason")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|s| format!(" ({s})"))
+                                .unwrap_or_default();
+                            last = cache_error(format!("range returned {status}{reason}"));
                         }
                         Err(error) => {
                             last = cache_error(format!("audio range request failed: {error}"));
