@@ -110,6 +110,9 @@ export class DiscordRpcService {
    * every unrelated change.
    */
   private static lastSentKey: string | null = null;
+  private static pauseTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  /** Automatically clear Discord presence after 30 seconds of being paused / not playing. */
+  private static readonly PAUSE_CLEAR_DELAY_MS = 30_000;
 
   /**
    * Initialize Discord RPC
@@ -128,6 +131,10 @@ export class DiscordRpcService {
    */
   static async setEnabled(enabled: boolean): Promise<void> {
     setDiscordPresenceEnabled(enabled);
+    if (this.pauseTimeoutId !== null) {
+      clearTimeout(this.pauseTimeoutId);
+      this.pauseTimeoutId = null;
+    }
     if (enabled) return;
 
     try {
@@ -149,6 +156,19 @@ export class DiscordRpcService {
     }
 
     const safeData = sanitizePresenceData(data);
+
+    if (safeData.isPlaying) {
+      if (this.pauseTimeoutId !== null) {
+        clearTimeout(this.pauseTimeoutId);
+        this.pauseTimeoutId = null;
+      }
+    } else if (this.pauseTimeoutId === null) {
+      this.pauseTimeoutId = setTimeout(() => {
+        this.pauseTimeoutId = null;
+        void this.clearPresence();
+      }, this.PAUSE_CLEAR_DELAY_MS);
+    }
+
     const nextKey = presenceDedupeKey(safeData);
     if (nextKey === this.lastSentKey) return;
 
@@ -179,10 +199,16 @@ export class DiscordRpcService {
       logInternalWarn("Discord.updatePresence.failed", error as Record<string, unknown>);
     }
   }
+
   /**
    * Clear Discord presence (show as idle)
    */
   static async clearPresence(): Promise<void> {
+    if (this.pauseTimeoutId !== null) {
+      clearTimeout(this.pauseTimeoutId);
+      this.pauseTimeoutId = null;
+    }
+
     if (!this.isEnabled) {
       return;
     }
