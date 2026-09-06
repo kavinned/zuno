@@ -1,6 +1,5 @@
 import { getCachedJson, setCachedJson } from "../internal/cache";
 import { logInternalWarn } from "../internal/logging";
-import { tauriFetch } from "./youtube/tauriFetch";
 
 /**
  * Lyric translation and romanization through Google's undocumented `translate_a` endpoint.
@@ -27,7 +26,6 @@ import { tauriFetch } from "./youtube/tauriFetch";
  * of lyrics, while one extra request costs a few hundred milliseconds.
  */
 const CHUNK_BUDGET_CHARS = 1200;
-const REQUEST_TIMEOUT_MS = 6_000;
 /** A song with more chunks than this is not a song; it is a transcript that will get us blocked. */
 const MAX_CHUNKS = 12;
 
@@ -137,12 +135,24 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
     q: text,
   });
 
-  const response = await tauriFetch(`https://translate.googleapis.com/translate_a/single?${params}`, {
-    headers: { Accept: "application/json" },
-    timeoutMs: REQUEST_TIMEOUT_MS,
-  });
-  if (!response.ok) return null;
-  return parseTranslateResponse(await response.json());
+  /*
+   * Uses the WebView's native fetch, not the Rust proxy.
+   *
+   * translate.googleapis.com is a public CORS-enabled endpoint — no authentication is
+   * needed and the browser's own HTTP stack is both allowed and preferred. Routing it
+   * through the Rust proxy causes 429s because that proxy shares its IP with all YouTube
+   * API traffic, making Google classify the combined traffic as automated.
+   */
+  try {
+    const response = await fetch(
+      `https://translate.googleapis.com/translate_a/single?${params}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) return null;
+    return parseTranslateResponse(await response.json());
+  } catch {
+    return null;
+  }
 }
 
 async function requestRomanization(text: string): Promise<string | null> {
@@ -155,12 +165,17 @@ async function requestRomanization(text: string): Promise<string | null> {
     q: text,
   });
 
-  const response = await tauriFetch(`https://translate.googleapis.com/translate_a/single?${params}`, {
-    headers: { Accept: "application/json" },
-    timeoutMs: REQUEST_TIMEOUT_MS,
-  });
-  if (!response.ok) return null;
-  return parseRomanizeResponse(await response.json());
+  // Same rationale as requestTranslation — WebView fetch, not the Rust proxy.
+  try {
+    const response = await fetch(
+      `https://translate.googleapis.com/translate_a/single?${params}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) return null;
+    return parseRomanizeResponse(await response.json());
+  } catch {
+    return null;
+  }
 }
 
 /**
