@@ -141,6 +141,8 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     setActiveIndex(-1);
     setFocusIndex(null);
     lineRefs.current = [];
+    prevDurationRef.current = track?.durationSec;
+    pendingDurationRetryRef.current = false;
     if (!track) return;
 
     setIsLoading(true);
@@ -163,6 +165,47 @@ export function LyricsView({ onClose }: LyricsViewProps) {
       cancelled = true;
     };
   }, [track?.id, reloadToken]);
+
+  /*
+   * Retry when durationSec arrives late.
+   *
+   * Both LRCLIB sources require a track duration and are skipped when it is absent. The
+   * duration sometimes lands after the first lyrics fetch already fired — the async getTrack
+   * metadata refresh in PlayerController sets it a moment after currentTrack is populated.
+   * When that happens, this effect detects the undefined → defined transition and triggers a
+   * reload, giving LRCLIB a second chance with the duration it needs.
+   *
+   * Only retries if the current result is not already synced — a successful LRCLIB hit on the
+   * first try does not need a second round trip. If a fetch is currently in-flight, it defers
+   * the retry until that fetch completes.
+   */
+  const prevDurationRef = useRef<number | undefined>(track?.durationSec);
+  const pendingDurationRetryRef = useRef(false);
+
+  useEffect(() => {
+    const prevDuration = prevDurationRef.current;
+    prevDurationRef.current = track?.durationSec;
+
+    // Only care about the undefined → defined transition.
+    if (prevDuration !== undefined || !track?.durationSec) return;
+    // No point retrying if we already have synced lyrics.
+    if (lyrics?.timing === "synced" && (lyrics.lines.length ?? 0) > 0) return;
+
+    if (isLoading) {
+      pendingDurationRetryRef.current = true;
+    } else {
+      setReloadToken((t) => t + 1);
+    }
+  }, [track?.durationSec, isLoading, lyrics?.timing, lyrics?.lines.length]);
+
+  useEffect(() => {
+    if (!isLoading && pendingDurationRetryRef.current) {
+      pendingDurationRetryRef.current = false;
+      if (lyrics?.timing !== "synced" || (lyrics.lines.length ?? 0) === 0) {
+        setReloadToken((t) => t + 1);
+      }
+    }
+  }, [isLoading, lyrics?.timing, lyrics?.lines.length]);
 
   /*
    * Every provider is a network call, so a song opened offline has nothing to show. Retrying
