@@ -1095,6 +1095,52 @@ export class YouTubeMusicDataSource extends DataSource {
     };
   }
 
+  private parseDurationText(text: string): number | undefined {
+    const parts = text.trim().split(":").map(Number);
+    if (parts.length < 2 || parts.some((part) => Number.isNaN(part))) return undefined;
+    if (parts.length === 2) {
+      return parts[0] * 60 + parts[1];
+    }
+    if (parts.length === 3) {
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    return undefined;
+  }
+
+  private getTrackDurationSec(item: MusicItem): number | undefined {
+    const raw = item as unknown as {
+      duration?: { seconds?: number; text?: string } | number | string;
+      fixed_columns?: Array<{ title?: { text?: string; toString(): string } }>;
+    };
+
+    if (typeof raw.duration === "number" && raw.duration > 0) {
+      return raw.duration;
+    }
+    if (typeof raw.duration === "string") {
+      const parsed = this.parseDurationText(raw.duration);
+      if (parsed) return parsed;
+    }
+    if (raw.duration && typeof raw.duration === "object") {
+      if (typeof raw.duration.seconds === "number" && raw.duration.seconds > 0) {
+        return raw.duration.seconds;
+      }
+      if (typeof raw.duration.text === "string") {
+        const parsed = this.parseDurationText(raw.duration.text);
+        if (parsed) return parsed;
+      }
+    }
+    if (Array.isArray(raw.fixed_columns)) {
+      for (const col of raw.fixed_columns) {
+        const text = col?.title?.text ?? col?.title?.toString();
+        if (text) {
+          const parsed = this.parseDurationText(text);
+          if (parsed) return parsed;
+        }
+      }
+    }
+    return undefined;
+  }
+
   private toTrack(item: MusicItem): Track | null {
     /*
      * The endpoint wins over `item.id`.
@@ -1130,6 +1176,7 @@ export class YouTubeMusicDataSource extends DataSource {
       viewCount: this.parseViewCount(viewCountText),
       viewCountText,
       isExplicit: this.isExplicitItem(item),
+      durationSec: this.getTrackDurationSec(item),
     };
   }
 
@@ -4627,12 +4674,46 @@ export class YouTubeMusicDataSource extends DataSource {
     const cached = await getCachedJson<Lyrics>(cacheKey);
     if (cached?.timing === "synced" && cached.lines.length > 0) return cached;
 
-    let refresh = this.lyricsRefreshPromises.get(track.id);
+    /*
+     * If the incoming track snapshot lacks a duration, try resolving it before fetching.
+     * Both LRCLIB sources require duration to match; if getTrack has it cached or can
+     * retrieve it quickly, we avoid needlessly skipping LRCLIB on the first fetch.
+     */
+    let trackToFetch = track;
+    if (!trackToFetch.durationSec || trackToFetch.durationSec <= 0) {
+      try {
+        const fullTrack = await this.getTrack(track.id);
+        if (fullTrack.durationSec && fullTrack.durationSec > 0) {
+          trackToFetch = { ...track, durationSec: fullTrack.durationSec };
+        }
+      } catch {
+        // Fall back to what we have
+      }
+    }
+
+    /*
+     * Dedup key includes whether durationSec is available.
+     *
+     * Both LRCLIB sources require a duration and are blocked (skipped with
+     * "Needs a track duration to match on") when `durationSec` is absent. That can happen
+     * when lyrics are fetched early — before the async getTrack metadata refresh has landed —
+     * so the track object still has `durationSec: undefined`.
+     *
+     * Without this qualification a later call that arrives *with* a duration would reuse the
+     * in-flight no-duration promise via the map and silently get back the LRCLIB-less result.
+     * Keying on duration presence means the two calls are treated as distinct: the first runs
+     * with whatever it has; the second, once duration is known, gets a fresh fetch that can
+     * reach LRCLIB.
+     */
+    const hasDuration = Boolean(trackToFetch.durationSec && trackToFetch.durationSec > 0);
+    const dedupKey = `${trackToFetch.id}:${hasDuration ? "dur" : "nodur"}`;
+
+    let refresh = this.lyricsRefreshPromises.get(dedupKey);
     if (!refresh) {
-      refresh = this.fetchSyncedLyrics(track).finally(() => {
-        this.lyricsRefreshPromises.delete(track.id);
+      refresh = this.fetchSyncedLyrics(trackToFetch).finally(() => {
+        this.lyricsRefreshPromises.delete(dedupKey);
       });
-      this.lyricsRefreshPromises.set(track.id, refresh);
+      this.lyricsRefreshPromises.set(dedupKey, refresh);
     }
 
     const lyrics = await refresh;

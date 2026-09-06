@@ -1404,6 +1404,19 @@ export class PlayerController {
         this.audioEngine.seekTo(this.pendingSeekTime);
         this.pendingSeekTime = null;
       }
+      const engineDuration = this.audioEngine.getDuration();
+      if (
+        engineDuration > 0
+        && !this.state.currentTrack?.durationSec
+        && this.state.currentTrack?.id === track.id
+      ) {
+        this.setState({
+          currentTrack: {
+            ...this.state.currentTrack,
+            durationSec: Math.round(engineDuration),
+          },
+        });
+      }
       logInternalInfo("PlayerController.ensureTrackLoaded success", {
         trackId: track.id,
         durationMs: Math.round(performance.now() - startedAt),
