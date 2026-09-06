@@ -118,6 +118,7 @@ import {
 import {
   TRANSLATION_LANGUAGES,
   TRANSLATION_OFF,
+  ROMANIZATION_MODE,
   getLanguageLabel,
   setLyricsTranslationLang,
   useLyricsTranslationLang,
@@ -1767,6 +1768,7 @@ export function SettingsPage({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={TRANSLATION_OFF}>Off</SelectItem>
+                    <SelectItem value={ROMANIZATION_MODE}>Romanize</SelectItem>
                     {TRANSLATION_LANGUAGES.map((code) => (
                       <SelectItem key={code} value={code}>
                         {getLanguageLabel(code)}

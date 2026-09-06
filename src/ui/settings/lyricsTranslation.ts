@@ -12,6 +12,13 @@ const CHANGE_EVENT = "lyrics-translation-change";
 
 export const TRANSLATION_OFF = "off";
 
+/**
+ * When selected, the secondary lyric line shows source-language romanization (romaji, pinyin,
+ * RR, etc.) instead of a translation. Stored in the same localStorage key as a translation
+ * language code — the existing hook and setter handle it without modification.
+ */
+export const ROMANIZATION_MODE = "rm";
+
 /** Codes the endpoint accepts; the labels come from the platform, not from a table here. */
 export const TRANSLATION_LANGUAGES = [
   "en", "es", "fr", "de", "it", "pt", "ru", "tr", "ar", "hi",

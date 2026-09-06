@@ -3,15 +3,20 @@ import { logInternalWarn } from "../internal/logging";
 import { tauriFetch } from "./youtube/tauriFetch";
 
 /**
- * Lyric translation through Google's undocumented `translate_a` endpoint.
+ * Lyric translation and romanization through Google's undocumented `translate_a` endpoint.
  *
  * This is the endpoint every media player quietly uses; it needs no key and works
  * immediately. It is also undocumented, rate-limited by IP, and can change shape without
  * notice — so everything here treats a failure as normal: a miss returns null, the caller
  * shows the original words, and nothing on the lyrics screen depends on it succeeding.
  *
- * Swapping in a keyed provider later means replacing `requestTranslation` alone; the
- * chunking, alignment and caching above it are provider-agnostic.
+ * Two modes share the same chunking/alignment/caching machinery:
+ * - Translation (`dt=t`): `body[0][i][0]` — target-language text.
+ * - Romanization (`dt=rm`): `body[0][i][3]` — source-language Roman-alphabet transcription
+ *   (romaji for Japanese, RR for Korean, pinyin for Mandarin, etc.).
+ *
+ * Swapping in a keyed provider later means replacing the `request*` functions alone; the
+ * chunking, alignment and caching above them are provider-agnostic.
  */
 
 /**
@@ -74,6 +79,43 @@ export function parseTranslateResponse(body: unknown): string | null {
 }
 
 /**
+ * Pulls the romanized text out of the endpoint's nested-array response.
+ *
+ * The endpoint returns romanization in `body[0][i][3]` when called with `dt=rm`.
+ * Same null-safe shape as `parseTranslateResponse`; absent or non-string slots are skipped.
+ */
+export function parseRomanizeResponse(body: unknown): string | null {
+  if (!Array.isArray(body)) return null;
+  const segments = body[0];
+  if (!Array.isArray(segments)) return null;
+
+  let text = "";
+  for (const segment of segments) {
+    if (Array.isArray(segment) && typeof segment[3] === "string") text += segment[3];
+  }
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Unicode ranges that signal non-Latin script.
+ *
+ * When every non-empty line is already Latin text, romanization is a no-op and the network
+ * call is skipped. The ranges cover the scripts most commonly found in streamed music:
+ * CJK Unified, Hangul, Hiragana, Katakana, Arabic, Devanagari, Cyrillic.
+ */
+const NON_LATIN_RE =
+  /[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u3000-\u9FFF\uAC00-\uD7AF\u3040-\u309F\u30A0-\u30FF]/;
+
+/**
+ * Returns true when at least one non-empty lyric line contains non-Latin characters.
+ *
+ * Call this before `romanizeLines` to avoid a pointless request for English-only lyrics.
+ */
+export function needsRomanization(lines: string[]): boolean {
+  return lines.some((line) => line.trim().length > 0 && NON_LATIN_RE.test(line));
+}
+
+/**
  * Splits a chunk's translation back into one entry per original line.
  *
  * Returns null on a count mismatch rather than guessing. A translation attached to the wrong
@@ -101,6 +143,24 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
   });
   if (!response.ok) return null;
   return parseTranslateResponse(await response.json());
+}
+
+async function requestRomanization(text: string): Promise<string | null> {
+  // `tl` is required by the endpoint but is ignored when only `dt=rm` is requested.
+  const params = new URLSearchParams({
+    client: "gtx",
+    sl: "auto",
+    tl: "en",
+    dt: "rm",
+    q: text,
+  });
+
+  const response = await tauriFetch(`https://translate.googleapis.com/translate_a/single?${params}`, {
+    headers: { Accept: "application/json" },
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
+  if (!response.ok) return null;
+  return parseRomanizeResponse(await response.json());
 }
 
 /**
@@ -158,4 +218,58 @@ export async function translateLines(
   if (!anyAligned) return null;
   if (key) await setCachedJson(key, translated);
   return translated;
+}
+
+/**
+ * Romanizes lines, preserving one output per input.
+ *
+ * Only meaningful for non-Latin scripts — call `needsRomanization` first to avoid firing
+ * pointless requests for English-only lyrics. Entries the endpoint could not align are
+ * returned as empty strings so the caller can skip them without disrupting the index mapping.
+ */
+export async function romanizeLines(
+  lines: string[],
+  cacheKey?: string,
+): Promise<string[] | null> {
+  if (lines.length === 0) return null;
+
+  const key = cacheKey ? `lyrics:romanize:v1:${cacheKey}` : null;
+  if (key) {
+    const cached = await getCachedJson<string[]>(key);
+    if (cached?.length === lines.length) return cached;
+  }
+
+  const chunks = chunkLines(lines);
+  if (chunks.length > MAX_CHUNKS) {
+    logInternalWarn("romanizeLines refused an oversized request", {
+      lineCount: lines.length,
+      chunkCount: chunks.length,
+    });
+    return null;
+  }
+
+  const romanized: string[] = [];
+  let anyAligned = false;
+
+  for (const chunk of chunks) {
+    try {
+      const result = await requestRomanization(chunk.join("\n"));
+      const aligned = result === null ? null : alignChunk(result, chunk.length);
+      if (aligned) {
+        romanized.push(...aligned);
+        anyAligned = true;
+      } else {
+        romanized.push(...chunk.map(() => ""));
+      }
+    } catch (error) {
+      logInternalWarn("romanizeLines chunk failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      romanized.push(...chunk.map(() => ""));
+    }
+  }
+
+  if (!anyAligned) return null;
+  if (key) await setCachedJson(key, romanized);
+  return romanized;
 }
