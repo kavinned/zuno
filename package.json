@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:nb": "tauri build --no-bundle",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check": "node scripts/run-checks.mjs",
