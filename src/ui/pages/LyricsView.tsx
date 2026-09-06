@@ -21,8 +21,8 @@ import { TrackArtwork } from "../components/TrackArtwork";
 import { setAmbientArtwork } from "../stores/ambientArtworkStore";
 import { OFFSET_STEP_SEC, setLyricsOffset, useLyricsOffset } from "../settings/lyricsOffset";
 import { useLyricsFontScale } from "../settings/lyricsFontScale";
-import { TRANSLATION_OFF, useLyricsTranslationLang } from "../settings/lyricsTranslation";
-import { translateLines } from "../../datasource/translate";
+import { TRANSLATION_OFF, ROMANIZATION_MODE, useLyricsTranslationLang } from "../settings/lyricsTranslation";
+import { translateLines, romanizeLines, needsRomanization } from "../../datasource/translate";
 import { findActiveLineIndex, getLineProgress, isSyncedLyrics } from "./lyricsTiming";
 
 /** How long a manual scroll keeps the auto-follow parked. */
@@ -284,16 +284,33 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     if (translationLang === TRANSLATION_OFF || !hasLines || !track) return;
 
     let cancelled = false;
-    void translateLines(lines.map((line) => line.text), translationLang, track.id)
-      .then((result) => {
-        if (!cancelled) setTranslations(result);
-      })
-      .catch((error) => {
-        logInternalWarn("LyricsView translation failed", {
-          trackId: track.id,
-          error: error instanceof Error ? error.message : String(error),
+
+    if (translationLang === ROMANIZATION_MODE) {
+      // Romanization: skip the network call entirely when every lyric line is already Latin.
+      if (!needsRomanization(lines.map((line) => line.text))) return;
+
+      void romanizeLines(lines.map((line) => line.text), track.id)
+        .then((result) => {
+          if (!cancelled) setTranslations(result);
+        })
+        .catch((error) => {
+          logInternalWarn("LyricsView romanization failed", {
+            trackId: track.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
+    } else {
+      void translateLines(lines.map((line) => line.text), translationLang, track.id)
+        .then((result) => {
+          if (!cancelled) setTranslations(result);
+        })
+        .catch((error) => {
+          logInternalWarn("LyricsView translation failed", {
+            trackId: track.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
 
     return () => {
       cancelled = true;
