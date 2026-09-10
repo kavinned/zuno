@@ -17,7 +17,14 @@ function equal(actual: unknown, expected: unknown, message: string): void {
   check(actual === expected, `${message}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
-const { alignChunk, chunkLines, parseTranslateResponse } = await import("./translate");
+const {
+  alignChunk,
+  chunkLines,
+  parseTranslateResponse,
+  getLyricsFingerprint,
+  getCachedTranslationsSync,
+  clearTranslateMemoryCache,
+} = await import("./translate");
 
 /* Chunking: a line must never be split across two requests, or it cannot be realigned. */
 
@@ -71,5 +78,25 @@ equal(alignChunk("uno\ndos", 3), null, "too few lines back is a refusal, not a p
 equal(alignChunk("uno\ndos\ntres\ncuatro", 3), null, "too many is also a refusal");
 equal(alignChunk("", 2), null, "an empty translation cannot be aligned to two lines");
 equal(alignChunk("", 1)?.[0], "", "but a single empty line is a legitimate blank");
+
+/* Fingerprinting: must distinguish different lyrics content or counts */
+
+const fp1 = getLyricsFingerprint(["hello", "world"]);
+const fp2 = getLyricsFingerprint(["hello", "world"]);
+const fp3 = getLyricsFingerprint(["hello", "there"]);
+const fp4 = getLyricsFingerprint(["hello", "world", "!"]);
+
+equal(fp1, fp2, "same lines produce identical fingerprints");
+check(fp1 !== fp3, "changed line text changes the fingerprint");
+check(fp1 !== fp4, "changed line count changes the fingerprint");
+
+/* Memory cache: empty initially, clears cleanly */
+
+clearTranslateMemoryCache();
+equal(
+  getCachedTranslationsSync(["hello", "world"], "rm", "track-123"),
+  null,
+  "cache miss returns null",
+);
 
 console.log("translate self-check passed");
