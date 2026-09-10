@@ -808,17 +808,22 @@ export function SettingsPage({
 
   useEffect(() => {
     let active = true;
-    void getCacheStats()
-      .then((stats) => {
-        if (!active) return;
-        setCacheStats(stats);
-        setCacheSizeGb((stats.maxBytes / 1024 ** 3).toString());
-      })
-      .catch(() => {
-        if (active) setCacheError("Unable to load cache settings.");
-      });
+    const refresh = () => {
+      void getCacheStats()
+        .then((stats) => {
+          if (!active) return;
+          setCacheStats(stats);
+          setCacheSizeGb((stats.maxBytes / 1024 ** 3).toString());
+        })
+        .catch(() => {
+          if (active) setCacheError("Unable to load cache settings.");
+        });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
     return () => {
       active = false;
+      window.removeEventListener("focus", refresh);
     };
   }, []);
 
