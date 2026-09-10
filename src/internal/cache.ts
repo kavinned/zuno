@@ -51,9 +51,25 @@ export function setCacheMaxBytes(maxBytes: number): Promise<CacheStats> {
   return invoke<CacheStats>("cache_set_max_bytes", { maxBytes });
 }
 
+const clearListeners = new Set<() => void>();
+
+export function onClearCache(listener: () => void): () => void {
+  clearListeners.add(listener);
+  return () => {
+    clearListeners.delete(listener);
+  };
+}
+
 export function clearCache(): Promise<CacheStats> {
   // The in-memory artwork map holds object URLs; clearing the on-disk cache without it
   // would leave the UI serving blobs the user just asked to delete.
   clearArtworkCache();
+  for (const listener of clearListeners) {
+    try {
+      listener();
+    } catch {
+      // Best-effort cleanup
+    }
+  }
   return invoke<CacheStats>("cache_clear");
 }

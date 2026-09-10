@@ -1,4 +1,4 @@
-import { getCachedJson, setCachedJson } from "../internal/cache";
+import { getCachedJson, setCachedJson, onClearCache } from "../internal/cache";
 import { logInternalWarn } from "../internal/logging";
 
 /**
@@ -17,6 +17,89 @@ import { logInternalWarn } from "../internal/logging";
  * Swapping in a keyed provider later means replacing the `request*` functions alone; the
  * chunking, alignment and caching above them are provider-agnostic.
  */
+
+const MAX_MEMORY_ENTRIES = 60;
+const memoryCache = new Map<string, string[]>();
+
+onClearCache(() => {
+  memoryCache.clear();
+});
+
+export function clearTranslateMemoryCache(): void {
+  memoryCache.clear();
+}
+
+function getMemoryCache(key: string): string[] | undefined {
+  const value = memoryCache.get(key);
+  if (value) {
+    // refresh LRU
+    memoryCache.delete(key);
+    memoryCache.set(key, value);
+  }
+  return value;
+}
+
+function setMemoryCache(key: string, value: string[]): void {
+  if (memoryCache.has(key)) {
+    memoryCache.delete(key);
+  } else if (memoryCache.size >= MAX_MEMORY_ENTRIES) {
+    const oldest = memoryCache.keys().next().value;
+    if (oldest !== undefined) {
+      memoryCache.delete(oldest);
+    }
+  }
+  memoryCache.set(key, value);
+}
+
+/**
+ * Lightweight deterministic content fingerprint to detect lyric line changes or source switches.
+ */
+export function getLyricsFingerprint(lines: string[]): string {
+  let hash = 0;
+  for (const line of lines) {
+    for (let i = 0; i < line.length; i++) {
+      hash = ((hash << 5) - hash + line.charCodeAt(i)) | 0;
+    }
+  }
+  return `${lines.length}_${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * Returns translated or romanized lines immediately if they are already in memory,
+ * eliminating the flash of untranslated lyrics when replaying songs.
+ */
+export function getCachedTranslationsSync(
+  lines: string[],
+  targetLangOrMode: string,
+  cacheKey?: string,
+): string[] | null {
+  if (!cacheKey || lines.length === 0) return null;
+  const fp = getLyricsFingerprint(lines);
+  const key = targetLangOrMode === "rm"
+    ? `lyrics:romanize:v2:${cacheKey}:${fp}`
+    : `lyrics:translation:v2:${targetLangOrMode}:${cacheKey}:${fp}`;
+  const cached = getMemoryCache(key);
+  if (cached && cached.length === lines.length) return cached;
+  return null;
+}
+
+/**
+ * Checks whether translated or romanized lines exist in memory or disk cache.
+ */
+export async function isTranslationCached(
+  lines: string[],
+  targetLangOrMode: string,
+  cacheKey?: string,
+): Promise<boolean> {
+  if (!cacheKey || lines.length === 0) return false;
+  const fp = getLyricsFingerprint(lines);
+  const key = targetLangOrMode === "rm"
+    ? `lyrics:romanize:v2:${cacheKey}:${fp}`
+    : `lyrics:translation:v2:${targetLangOrMode}:${cacheKey}:${fp}`;
+  if (getMemoryCache(key)) return true;
+  const disk = await getCachedJson<string[]>(key);
+  return disk?.length === lines.length;
+}
 
 /**
  * Characters per request.
@@ -120,15 +203,15 @@ export function needsRomanization(lines: string[]): boolean {
  * line is worse than no translation: it is confidently wrong, and on a lyrics screen the
  * listener has no way to tell.
  */
-export function alignChunk(translated: string, lineCount: number): string[] | null {
-  const parts = translated.split("\n");
+export function alignChunk(translated: string, lineCount: number, delimiter = "\n"): string[] | null {
+  const parts = translated.split(delimiter);
   if (parts.length !== lineCount) return null;
   return parts.map((part) => part.trim());
 }
 
 async function requestTranslation(text: string, targetLang: string): Promise<string | null> {
   const params = new URLSearchParams({
-    client: "gtx",
+    client: "dict-chrome-ex",
     sl: "auto",
     tl: targetLang,
     dt: "t",
@@ -146,7 +229,10 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
   try {
     const response = await fetch(
       `https://translate.googleapis.com/translate_a/single?${params}`,
-      { headers: { Accept: "application/json" } },
+      {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(6_000),
+      },
     );
     if (!response.ok) return null;
     return parseTranslateResponse(await response.json());
@@ -158,7 +244,7 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
 async function requestRomanization(text: string): Promise<string | null> {
   // `tl` is required by the endpoint but is ignored when only `dt=rm` is requested.
   const params = new URLSearchParams({
-    client: "gtx",
+    client: "dict-chrome-ex",
     sl: "auto",
     tl: "en",
     dt: "rm",
@@ -169,7 +255,10 @@ async function requestRomanization(text: string): Promise<string | null> {
   try {
     const response = await fetch(
       `https://translate.googleapis.com/translate_a/single?${params}`,
-      { headers: { Accept: "application/json" } },
+      {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(6_000),
+      },
     );
     if (!response.ok) return null;
     return parseRomanizeResponse(await response.json());
@@ -191,12 +280,19 @@ export async function translateLines(
 ): Promise<string[] | null> {
   if (lines.length === 0) return null;
 
-  const key = cacheKey ? `lyrics:translation:v1:${targetLang}:${cacheKey}` : null;
+  const key = cacheKey
+    ? `lyrics:translation:v2:${targetLang}:${cacheKey}:${getLyricsFingerprint(lines)}`
+    : null;
   if (key) {
+    const memory = getMemoryCache(key);
+    if (memory && memory.length === lines.length) return memory;
     const cached = await getCachedJson<string[]>(key);
     // Length is part of the validity check: a cached run against a different lyric source
     // would align to nothing.
-    if (cached?.length === lines.length) return cached;
+    if (cached?.length === lines.length) {
+      setMemoryCache(key, cached);
+      return cached;
+    }
   }
 
   const chunks = chunkLines(lines);
@@ -210,6 +306,7 @@ export async function translateLines(
 
   const translated: string[] = [];
   let anyAligned = false;
+  let allAligned = true;
 
   for (const chunk of chunks) {
     try {
@@ -221,17 +318,23 @@ export async function translateLines(
       } else {
         // Blank rather than misaligned: this chunk shows its original lines untranslated.
         translated.push(...chunk.map(() => ""));
+        allAligned = false;
       }
     } catch (error) {
       logInternalWarn("translateLines chunk failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       translated.push(...chunk.map(() => ""));
+      allAligned = false;
     }
   }
 
   if (!anyAligned) return null;
-  if (key) await setCachedJson(key, translated);
+  // Only persist complete translations so transient network errors do not poison the cache.
+  if (key && allAligned) {
+    setMemoryCache(key, translated);
+    await setCachedJson(key, translated);
+  }
   return translated;
 }
 
@@ -248,10 +351,17 @@ export async function romanizeLines(
 ): Promise<string[] | null> {
   if (lines.length === 0) return null;
 
-  const key = cacheKey ? `lyrics:romanize:v1:${cacheKey}` : null;
+  const key = cacheKey
+    ? `lyrics:romanize:v2:${cacheKey}:${getLyricsFingerprint(lines)}`
+    : null;
   if (key) {
+    const memory = getMemoryCache(key);
+    if (memory && memory.length === lines.length) return memory;
     const cached = await getCachedJson<string[]>(key);
-    if (cached?.length === lines.length) return cached;
+    if (cached?.length === lines.length) {
+      setMemoryCache(key, cached);
+      return cached;
+    }
   }
 
   const chunks = chunkLines(lines);
@@ -265,26 +375,45 @@ export async function romanizeLines(
 
   const romanized: string[] = [];
   let anyAligned = false;
+  let allAligned = true;
 
   for (const chunk of chunks) {
     try {
-      const result = await requestRomanization(chunk.join("\n"));
-      const aligned = result === null ? null : alignChunk(result, chunk.length);
+      /*
+       * For CJK scripts (especially Japanese), Google's romanizer collapses newlines into spaces.
+       * Joining lines with ' | ' guarantees the line boundary survives romanization across all scripts.
+       */
+      const sanitized = chunk.map((line) => line.replace(/\|/g, "/"));
+      const result = await requestRomanization(sanitized.join(" | "));
+      let aligned: string[] | null = null;
+      if (result !== null) {
+        if (result.includes("|")) {
+          aligned = alignChunk(result, chunk.length, "|");
+        } else {
+          aligned = alignChunk(result, chunk.length, "\n");
+        }
+      }
       if (aligned) {
         romanized.push(...aligned);
         anyAligned = true;
       } else {
         romanized.push(...chunk.map(() => ""));
+        allAligned = false;
       }
     } catch (error) {
       logInternalWarn("romanizeLines chunk failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       romanized.push(...chunk.map(() => ""));
+      allAligned = false;
     }
   }
 
   if (!anyAligned) return null;
-  if (key) await setCachedJson(key, romanized);
+  // Only persist complete romanizations so transient network errors do not poison the cache.
+  if (key && allAligned) {
+    setMemoryCache(key, romanized);
+    await setCachedJson(key, romanized);
+  }
   return romanized;
 }
