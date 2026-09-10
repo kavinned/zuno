@@ -58,6 +58,8 @@ export interface Lyrics {
   sourceId?: string;
   /** What every source did on this lookup, in preference order. */
   attempts?: LyricsSourceAttempt[];
+  /** Whether these lyrics were served from the local cache. */
+  cached?: boolean;
 }
 
 export interface Album {

@@ -22,7 +22,13 @@ import { setAmbientArtwork } from "../stores/ambientArtworkStore";
 import { OFFSET_STEP_SEC, setLyricsOffset, useLyricsOffset } from "../settings/lyricsOffset";
 import { useLyricsFontScale } from "../settings/lyricsFontScale";
 import { TRANSLATION_OFF, ROMANIZATION_MODE, useLyricsTranslationLang } from "../settings/lyricsTranslation";
-import { translateLines, romanizeLines, needsRomanization } from "../../datasource/translate";
+import {
+  translateLines,
+  romanizeLines,
+  needsRomanization,
+  getCachedTranslationsSync,
+  isTranslationCached,
+} from "../../datasource/translate";
 import { findActiveLineIndex, getLineProgress, isSyncedLyrics } from "./lyricsTiming";
 
 /** How long a manual scroll keeps the auto-follow parked. */
@@ -83,6 +89,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
   const fontScale = useLyricsFontScale();
   const translationLang = useLyricsTranslationLang();
   const [translations, setTranslations] = useState<string[] | null>(null);
+  const [isTranslationCachedState, setIsTranslationCachedState] = useState<boolean | null>(null);
 
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -323,16 +330,33 @@ export function LyricsView({ onClose }: LyricsViewProps) {
    * tracks while it is in flight is easy, and a late reply would caption the wrong song.
    */
   useEffect(() => {
-    setTranslations(null);
-    if (translationLang === TRANSLATION_OFF || !hasLines || !track) return;
+    if (translationLang === TRANSLATION_OFF || !hasLines || !track) {
+      setTranslations(null);
+      setIsTranslationCachedState(null);
+      return;
+    }
 
+    const lineTexts = lines.map((line) => line.text);
+    const syncCached = getCachedTranslationsSync(lineTexts, translationLang, track.id);
+    if (syncCached) {
+      setTranslations(syncCached);
+      setIsTranslationCachedState(true);
+      return;
+    }
+
+    setTranslations(null);
+    setIsTranslationCachedState(null);
     let cancelled = false;
+
+    void isTranslationCached(lineTexts, translationLang, track.id).then((cached) => {
+      if (!cancelled) setIsTranslationCachedState(cached);
+    });
 
     if (translationLang === ROMANIZATION_MODE) {
       // Romanization: skip the network call entirely when every lyric line is already Latin.
-      if (!needsRomanization(lines.map((line) => line.text))) return;
+      if (!needsRomanization(lineTexts)) return;
 
-      void romanizeLines(lines.map((line) => line.text), track.id)
+      void romanizeLines(lineTexts, track.id)
         .then((result) => {
           if (!cancelled) setTranslations(result);
         })
@@ -343,7 +367,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
           });
         });
     } else {
-      void translateLines(lines.map((line) => line.text), translationLang, track.id)
+      void translateLines(lineTexts, translationLang, track.id)
         .then((result) => {
           if (!cancelled) setTranslations(result);
         })
@@ -466,6 +490,45 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
   const sourceLabel = lyrics?.sourceLabel;
   const timingLabel = hasLines ? (isSynced ? "Synced" : "Unsynced") : null;
+
+  const translationActive =
+    translationLang !== TRANSLATION_OFF &&
+    (translationLang !== ROMANIZATION_MODE || needsRomanization(lines.map((l) => l.text)));
+
+  const lyricsCached = Boolean(lyrics?.cached);
+  const transCached = Boolean(isTranslationCachedState);
+
+  let cacheBadgeLabel: string | null = null;
+  let cacheBadgeTooltip: string | null = null;
+  let isCachePositive = false;
+
+  if (hasLines) {
+    if (!translationActive) {
+      isCachePositive = lyricsCached;
+      cacheBadgeLabel = lyricsCached ? "Cached" : "Not cached";
+      cacheBadgeTooltip = lyricsCached
+        ? "Lyrics loaded from local disk cache"
+        : "Lyrics fetched live from provider";
+    } else {
+      if (lyricsCached && transCached) {
+        isCachePositive = true;
+        cacheBadgeLabel = "Cached";
+        cacheBadgeTooltip = "Lyrics and translation loaded from cache";
+      } else if (lyricsCached) {
+        isCachePositive = true;
+        cacheBadgeLabel = "Lyrics cached";
+        cacheBadgeTooltip = "Lyrics loaded from cache; translation fetched live";
+      } else if (transCached) {
+        isCachePositive = true;
+        cacheBadgeLabel = "Translation cached";
+        cacheBadgeTooltip = "Translation loaded from cache; lyrics fetched live";
+      } else {
+        isCachePositive = false;
+        cacheBadgeLabel = "Not cached";
+        cacheBadgeTooltip = "Lyrics and translation fetched live";
+      }
+    }
+  }
   const emptyMessage = !isOnline
     ? "You're offline. Lyrics need a connection."
     : failed
@@ -700,6 +763,26 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             <LyricsSourcePanel attempts={lyrics.attempts} activeId={lyrics.sourceId} />
           ) : (
             sourceLabel && <span className="truncate">via {sourceLabel}</span>
+          )}
+          {cacheBadgeLabel && (
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium tracking-wide transition-colors",
+                isCachePositive
+                  ? "bg-emerald-500/10 text-emerald-400 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  : "bg-muted/60 text-muted-foreground",
+              )}
+              title={cacheBadgeTooltip ?? undefined}
+            >
+              <span
+                className={cn(
+                  "size-1.5 rounded-full",
+                  isCachePositive ? "bg-emerald-400" : "bg-muted-foreground/60",
+                )}
+                aria-hidden="true"
+              />
+              {cacheBadgeLabel}
+            </span>
           )}
         </span>
         {isSynced && track && <LyricsOffsetControl trackId={track.id} offset={offset} />}

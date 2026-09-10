@@ -4672,7 +4672,9 @@ export class YouTubeMusicDataSource extends DataSource {
      */
     const cacheKey = `lyrics:synced:v3:${getPreferredLyricsSourceId()}:${track.id}`;
     const cached = await getCachedJson<Lyrics>(cacheKey);
-    if (cached?.timing === "synced" && cached.lines.length > 0) return cached;
+    if (cached?.timing === "synced" && cached.lines.length > 0) {
+      return { ...cached, cached: true };
+    }
 
     /*
      * If the incoming track snapshot lacks a duration, try resolving it before fetching.
@@ -4725,7 +4727,7 @@ export class YouTubeMusicDataSource extends DataSource {
     if (lyrics.timing === "synced" && lyrics.lines.length > 0) {
       await setCachedJson(cacheKey, lyrics);
     }
-    return lyrics;
+    return { ...lyrics, cached: false };
   }
 
   /**
