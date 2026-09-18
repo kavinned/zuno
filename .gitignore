@@ -31,7 +31,9 @@ dist-ssr
 
 .docs
 
+.agent
 .agents
+.graphifyignore
 graphify-out
 
 # Tooling caches
