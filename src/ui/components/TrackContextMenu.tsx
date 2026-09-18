@@ -405,16 +405,40 @@ export function TrackContextMenuProvider({
     }
   };
 
-  const addToPlaylist = async (playlist: Playlist) => {
-    if (!track || addingPlaylistId) return;
-    const selectedTrack = track;
-    const batch = batchTracks;
+  const addTrackToPlaylist = async (selectedTrack: Track, playlist: Playlist) => {
+    if (addingPlaylistId) return;
     setAddingPlaylistId(playlist.id);
     setError(null);
     setIsPickerOpen(false);
 
     try {
-      if (batch) {
+      showPersistentToast("Adding...");
+      const result = await libraryController.addTrackToPlaylist(selectedTrack, playlist);
+      setRemoteMembership((current) => new Set(current).add(barePlaylistId(playlist.id)));
+      showToast(
+        result === "already-present" ? "Already in playlist" : `Added to ${playlist.title}`,
+      );
+    } catch (addError) {
+      showToast(
+        addError instanceof Error ? addError.message : "Unable to add this song.",
+        4000,
+      );
+    } finally {
+      setAddingPlaylistId(null);
+    }
+  };
+
+  const addToPlaylist = async (playlist: Playlist) => {
+    if (!track || addingPlaylistId) return;
+    const selectedTrack = track;
+    const batch = batchTracks;
+
+    if (batch) {
+      setAddingPlaylistId(playlist.id);
+      setError(null);
+      setIsPickerOpen(false);
+
+      try {
         showPersistentToast(`Adding 0 of ${batch.length}...`);
         const result = await libraryController.addTracksToPlaylist(
           batch,
@@ -429,25 +453,19 @@ export function TrackContextMenuProvider({
         if (result.alreadyPresent > 0) parts.push(`${result.alreadyPresent} already there`);
         if (result.failed > 0) parts.push(`${result.failed} failed`);
         showToast(parts.join(" · "), 5000);
-      } else {
-        showPersistentToast("Adding...");
-        const result = await libraryController.addTrackToPlaylist(selectedTrack, playlist);
-        // Ticked straight away, so reopening the picker does not have to wait on another round
-        // trip to show what just happened.
-        setRemoteMembership((current) => new Set(current).add(barePlaylistId(playlist.id)));
+      } catch (addError) {
         showToast(
-          result === "already-present" ? "Already in playlist" : `Added to ${playlist.title}`,
+          addError instanceof Error ? addError.message : "Unable to add this song.",
+          4000,
         );
+      } finally {
+        setAddingPlaylistId(null);
+        setBatchTracks(null);
       }
-    } catch (addError) {
-      showToast(
-        addError instanceof Error ? addError.message : "Unable to add this song.",
-        4000,
-      );
-    } finally {
-      setAddingPlaylistId(null);
-      setBatchTracks(null);
+      return;
     }
+
+    await addTrackToPlaylist(selectedTrack, playlist);
   };
 
   /** Like-only shorthand, kept for callers that never deal in dislikes. */
@@ -530,8 +548,8 @@ export function TrackContextMenuProvider({
    * close over a dozen pieces of state. Dependency lists that long are wrong eventually, and
    * being wrong here means a menu acting on the previous track. The ref is always current.
    */
-  const handlersRef = useRef({ openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum });
-  handlersRef.current = { openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum };
+  const handlersRef = useRef({ openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum, addTrackToPlaylist, showToast });
+  handlersRef.current = { openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum, addTrackToPlaylist, showToast };
 
   const contextValue = useMemo<TrackContextMenuValue>(
     () => ({
@@ -545,6 +563,10 @@ export function TrackContextMenuProvider({
       openAlbumForTrack: onOpenAlbum
         ? (selectedTrack) => handlersRef.current.onOpenAlbum?.(selectedTrack)
         : null,
+      addTrackToPlaylist: (selectedTrack, playlist) =>
+        handlersRef.current.addTrackToPlaylist(selectedTrack, playlist),
+      showToast: (message, duration) =>
+        handlersRef.current.showToast(message, duration),
     }),
     [Boolean(onOpenAlbum)],
   );
@@ -828,7 +850,7 @@ export function TrackContextMenuProvider({
             <Loader variant="spinner" size={18} />
           ) : toast === "Already in playlist" ? (
             <CloseIcon size={16} aria-hidden="true" />
-          ) : (toast.startsWith("Added ") || toast.includes("will play next") || toast === "Link copied" || toast.startsWith("Removed from ")) && (
+          ) : (toast.startsWith("Added ") || toast.includes("will play next") || toast === "Link copied" || toast.startsWith("Removed from ") || toast.startsWith("Default playlist")) && (
             <CheckIcon size={18} aria-hidden="true" />
           )}
           <span>{toast}</span>

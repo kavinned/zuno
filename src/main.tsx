@@ -40,6 +40,7 @@ import { hydrateSessionRestoreSetting } from "./ui/settings/sessionRestore";
 import { hydrateToolbarItemSettings } from "./ui/settings/toolbarItems";
 import { hydrateHomeSectionSettings } from "./ui/settings/homeSections";
 import { applyRenderEffects, hydrateRenderEffects } from "./ui/settings/renderEffects";
+import { hydrateDefaultPlaylist } from "./ui/settings/defaultPlaylist";
 import { startMemoryReport } from "./internal/memoryReport";
 
 logInternalInfo("main.bootstrap start");
@@ -88,7 +89,7 @@ void Promise.all([
   hydratePlayHistory(),
   // Read synchronously from local storage at boot, so this only backfills a machine whose
   // local storage was cleared — it takes effect from the next launch.
-  hydrateSessionRestoreSetting(),
+  hydrateDefaultPlaylist(),
 ]).catch((error) => {
   logInternalError("settings hydration failed", error);
 });

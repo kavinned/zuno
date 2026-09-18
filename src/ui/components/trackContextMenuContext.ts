@@ -38,6 +38,10 @@ export interface TrackContextMenuValue {
    * both surfaces hide the affordance rather than offer a dead one.
    */
   openAlbumForTrack: ((track: Track) => void) | null;
+  /** Adds a track directly to a specific playlist, handling progress, remote membership and toasts. */
+  addTrackToPlaylist: (track: Track, playlist: Playlist) => Promise<void>;
+  /** Displays a transient or styled toast using the app-wide context menu toast bar. */
+  showToast: (message: string, duration?: number) => void;
 }
 
 export const TrackContextMenuContext = createContext<TrackContextMenuValue | null>(null);
