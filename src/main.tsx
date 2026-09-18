@@ -41,6 +41,7 @@ import { hydrateToolbarItemSettings } from "./ui/settings/toolbarItems";
 import { hydrateHomeSectionSettings } from "./ui/settings/homeSections";
 import { applyRenderEffects, hydrateRenderEffects } from "./ui/settings/renderEffects";
 import { hydrateLyricsTranslation } from "./ui/settings/lyricsTranslation";
+import { hydrateDefaultPlaylist } from "./ui/settings/defaultPlaylist";
 import { startMemoryReport } from "./internal/memoryReport";
 
 logInternalInfo("main.bootstrap start");
@@ -91,6 +92,7 @@ void Promise.all([
   // local storage was cleared — it takes effect from the next launch.
   hydrateSessionRestoreSetting(),
   hydrateLyricsTranslation(),
+  hydrateDefaultPlaylist(),
 ]).catch((error) => {
   logInternalError("settings hydration failed", error);
 });
