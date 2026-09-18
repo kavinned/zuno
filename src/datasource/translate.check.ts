@@ -27,6 +27,10 @@ const {
   getLastTranslateError,
   clearLastTranslateError,
   translateLines,
+  detectScriptLanguage,
+  decodeHtmlEntities,
+  isGoogleRateLimited,
+  resetGoogleRateLimitCooldown,
 } = await import("./translate");
 
 /* Chunking: a line must never be split across two requests, or it cannot be realigned. */
@@ -111,6 +115,27 @@ const oversized = Array.from({ length: 15 * 50 }, () => "long lyric line to exce
 const res = await translateLines(oversized, "es");
 equal(res, null, "oversized request returns null");
 equal(getLastTranslateError(), "Lyrics exceed maximum length", "oversized request sets specific error");
+
+/* Script / language detection for failover */
+
+equal(detectScriptLanguage("こんにちは 世界"), "ja", "detects Japanese Hiragana/Kanji");
+equal(detectScriptLanguage("カタカナ テスト"), "ja", "detects Japanese Katakana");
+equal(detectScriptLanguage("안녕하세요 세상"), "ko", "detects Korean Hangul");
+equal(detectScriptLanguage("你好 世界"), "zh", "detects Chinese Hanzi");
+equal(detectScriptLanguage("Привет мир"), "ru", "detects Russian Cyrillic");
+equal(detectScriptLanguage("नमस्ते दुनिया"), "hi", "detects Hindi Devanagari");
+equal(detectScriptLanguage("Hello world", "es"), "en", "defaults to en when translating to another language");
+equal(detectScriptLanguage("despacito quiero respirar tu cuello despacito con el", "en"), "es", "detects Spanish stopwords");
+equal(detectScriptLanguage("dans le noir pour la vie avec nous", "en"), "fr", "detects French stopwords");
+
+/* HTML entity decoding */
+
+equal(decodeHtmlEntities("&quot;hello&quot; &amp; &#39;world&#39;"), '"hello" & \'world\'', "decodes html entities");
+
+/* Rate limit cooldown */
+
+resetGoogleRateLimitCooldown();
+equal(isGoogleRateLimited(), false, "cooldown is false after reset");
 
 console.log("translate self-check passed");
 

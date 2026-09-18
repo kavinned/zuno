@@ -210,6 +210,7 @@ export function alignChunk(translated: string, lineCount: number, delimiter = "\
 }
 
 let lastTranslateError: string | null = null;
+let googleRateLimitedUntil = 0;
 
 export function getLastTranslateError(): string | null {
   return lastTranslateError;
@@ -219,7 +220,91 @@ export function clearLastTranslateError(): void {
   lastTranslateError = null;
 }
 
-async function requestTranslation(text: string, targetLang: string): Promise<string | null> {
+export function isGoogleRateLimited(): boolean {
+  return Date.now() < googleRateLimitedUntil;
+}
+
+export function resetGoogleRateLimitCooldown(): void {
+  googleRateLimitedUntil = 0;
+}
+
+/**
+ * Heuristic script and stopword detection to infer source language code for fallback translation APIs.
+ */
+export function detectScriptLanguage(text: string, targetLang = "en"): string {
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return "ja";
+  if (/[\uAC00-\uD7AF\u1100-\u11FF]/.test(text)) return "ko";
+  if (/[\u4E00-\u9FFF]/.test(text)) return "zh";
+  if (/[\u0400-\u04FF]/.test(text)) return "ru";
+  if (/[\u0900-\u097F]/.test(text)) return "hi";
+  if (/[\u0600-\u06FF]/.test(text)) return "ar";
+
+  if (targetLang !== "en") return "en";
+
+  // When target is English, score common Latin-script languages from frequent words
+  const scores: Record<string, number> = {
+    es: (text.match(/\b(el|los|las|del|por|para|pero|quiero|estoy|como|cuando)\b/gi) ?? []).length,
+    fr: (text.match(/\b(le|les|des|est|dans|pour|avec|nous|vous|cette|tout)\b/gi) ?? []).length,
+    de: (text.match(/\b(der|die|das|und|nicht|mit|ein|eine|ist|auf)\b/gi) ?? []).length,
+    it: (text.match(/\b(di|che|per|sono|non|della|degli|tutto)\b/gi) ?? []).length,
+    pt: (text.match(/\b(os|dos|das|não|uma|mais|muito|isso)\b/gi) ?? []).length,
+  };
+
+  let bestLang = "auto";
+  let maxScore = 0;
+  for (const [lang, score] of Object.entries(scores)) {
+    if (score > maxScore) {
+      maxScore = score;
+      bestLang = lang;
+    }
+  }
+
+  return bestLang;
+}
+
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+export async function requestMyMemoryTranslation(
+  text: string,
+  sourceLang: string,
+  targetLang: string,
+): Promise<string | null> {
+  const src = sourceLang === "auto" ? "en" : sourceLang;
+  if (src === targetLang) return text;
+
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${targetLang}`;
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      responseData?: { translatedText?: string };
+      responseStatus?: number;
+    };
+    if (data.responseStatus !== 200 || !data.responseData?.translatedText) {
+      return null;
+    }
+    const translated = decodeHtmlEntities(data.responseData.translatedText);
+    return translated.length > 0 ? translated : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requestGoogleTranslation(text: string, targetLang: string): Promise<string | null> {
+  if (Date.now() < googleRateLimitedUntil) {
+    return null;
+  }
+
   const params = new URLSearchParams({
     client: "dict-chrome-ex",
     sl: "auto",
@@ -251,6 +336,7 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
     );
     if (!response.ok) {
       if (response.status === 429) {
+        googleRateLimitedUntil = Date.now() + 5 * 60_000;
         lastTranslateError = "Rate limit reached (too many requests)";
       } else {
         lastTranslateError = `Service returned HTTP ${response.status}`;
@@ -272,7 +358,35 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
   }
 }
 
+async function requestTranslation(text: string, targetLang: string): Promise<string | null> {
+  // Try primary: Google Translate
+  const google = await requestGoogleTranslation(text, targetLang);
+  if (google !== null) return google;
+
+  // If offline, do not attempt network fallback
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    return null;
+  }
+
+  // Fallback: MyMemory keyless translation
+  const sourceLang = detectScriptLanguage(text, targetLang);
+  if (sourceLang !== targetLang) {
+    const fallback = await requestMyMemoryTranslation(text, sourceLang, targetLang);
+    if (fallback !== null) {
+      lastTranslateError = null;
+      return fallback;
+    }
+  }
+
+  return null;
+}
+
 async function requestRomanization(text: string): Promise<string | null> {
+  if (Date.now() < googleRateLimitedUntil) {
+    lastTranslateError = "Rate limit reached (too many requests)";
+    return null;
+  }
+
   // `tl` is required by the endpoint but is ignored when only `dt=rm` is requested.
   const params = new URLSearchParams({
     client: "dict-chrome-ex",
@@ -298,6 +412,7 @@ async function requestRomanization(text: string): Promise<string | null> {
     );
     if (!response.ok) {
       if (response.status === 429) {
+        googleRateLimitedUntil = Date.now() + 5 * 60_000;
         lastTranslateError = "Rate limit reached (too many requests)";
       } else {
         lastTranslateError = `Service returned HTTP ${response.status}`;
