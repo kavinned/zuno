@@ -24,6 +24,9 @@ const {
   getLyricsFingerprint,
   getCachedTranslationsSync,
   clearTranslateMemoryCache,
+  getLastTranslateError,
+  clearLastTranslateError,
+  translateLines,
 } = await import("./translate");
 
 /* Chunking: a line must never be split across two requests, or it cannot be realigned. */
@@ -99,4 +102,15 @@ equal(
   "cache miss returns null",
 );
 
+/* Error tracking */
+
+clearLastTranslateError();
+equal(getLastTranslateError(), null, "error is null after clear");
+
+const oversized = Array.from({ length: 15 * 50 }, () => "long lyric line to exceed chunk limit");
+const res = await translateLines(oversized, "es");
+equal(res, null, "oversized request returns null");
+equal(getLastTranslateError(), "Lyrics exceed maximum length", "oversized request sets specific error");
+
 console.log("translate self-check passed");
+

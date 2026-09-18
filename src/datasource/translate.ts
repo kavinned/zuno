@@ -209,6 +209,16 @@ export function alignChunk(translated: string, lineCount: number, delimiter = "\
   return parts.map((part) => part.trim());
 }
 
+let lastTranslateError: string | null = null;
+
+export function getLastTranslateError(): string | null {
+  return lastTranslateError;
+}
+
+export function clearLastTranslateError(): void {
+  lastTranslateError = null;
+}
+
 async function requestTranslation(text: string, targetLang: string): Promise<string | null> {
   const params = new URLSearchParams({
     client: "dict-chrome-ex",
@@ -217,6 +227,11 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
     dt: "t",
     q: text,
   });
+
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    lastTranslateError = "Network offline";
+    return null;
+  }
 
   /*
    * Uses the WebView's native fetch, not the Rust proxy.
@@ -234,9 +249,25 @@ async function requestTranslation(text: string, targetLang: string): Promise<str
         signal: AbortSignal.timeout(6_000),
       },
     );
-    if (!response.ok) return null;
-    return parseTranslateResponse(await response.json());
-  } catch {
+    if (!response.ok) {
+      if (response.status === 429) {
+        lastTranslateError = "Rate limit reached (too many requests)";
+      } else {
+        lastTranslateError = `Service returned HTTP ${response.status}`;
+      }
+      return null;
+    }
+    const parsed = parseTranslateResponse(await response.json());
+    if (parsed === null) {
+      lastTranslateError = "Translation service returned empty response";
+    }
+    return parsed;
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      lastTranslateError = "Request timed out";
+    } else {
+      lastTranslateError = "Network connection error";
+    }
     return null;
   }
 }
@@ -251,6 +282,11 @@ async function requestRomanization(text: string): Promise<string | null> {
     q: text,
   });
 
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    lastTranslateError = "Network offline";
+    return null;
+  }
+
   // Same rationale as requestTranslation — WebView fetch, not the Rust proxy.
   try {
     const response = await fetch(
@@ -260,9 +296,25 @@ async function requestRomanization(text: string): Promise<string | null> {
         signal: AbortSignal.timeout(6_000),
       },
     );
-    if (!response.ok) return null;
-    return parseRomanizeResponse(await response.json());
-  } catch {
+    if (!response.ok) {
+      if (response.status === 429) {
+        lastTranslateError = "Rate limit reached (too many requests)";
+      } else {
+        lastTranslateError = `Service returned HTTP ${response.status}`;
+      }
+      return null;
+    }
+    const parsed = parseRomanizeResponse(await response.json());
+    if (parsed === null) {
+      lastTranslateError = "No romanization returned for this script";
+    }
+    return parsed;
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      lastTranslateError = "Request timed out";
+    } else {
+      lastTranslateError = "Network connection error";
+    }
     return null;
   }
 }
@@ -278,6 +330,7 @@ export async function translateLines(
   targetLang: string,
   cacheKey?: string,
 ): Promise<string[] | null> {
+  lastTranslateError = null;
   if (lines.length === 0) return null;
 
   const key = cacheKey
@@ -297,6 +350,7 @@ export async function translateLines(
 
   const chunks = chunkLines(lines);
   if (chunks.length > MAX_CHUNKS) {
+    lastTranslateError = "Lyrics exceed maximum length";
     logInternalWarn("translateLines refused an oversized request", {
       lineCount: lines.length,
       chunkCount: chunks.length,
@@ -316,6 +370,9 @@ export async function translateLines(
         translated.push(...aligned);
         anyAligned = true;
       } else {
+        if (result !== null) {
+          lastTranslateError = "Could not align translated lines";
+        }
         // Blank rather than misaligned: this chunk shows its original lines untranslated.
         translated.push(...chunk.map(() => ""));
         allAligned = false;
@@ -329,12 +386,18 @@ export async function translateLines(
     }
   }
 
-  if (!anyAligned) return null;
+  if (!anyAligned) {
+    if (!lastTranslateError) {
+      lastTranslateError = "Translation failed to load";
+    }
+    return null;
+  }
   // Only persist complete translations so transient network errors do not poison the cache.
   if (key && allAligned) {
     setMemoryCache(key, translated);
     await setCachedJson(key, translated);
   }
+  lastTranslateError = null;
   return translated;
 }
 
@@ -349,6 +412,7 @@ export async function romanizeLines(
   lines: string[],
   cacheKey?: string,
 ): Promise<string[] | null> {
+  lastTranslateError = null;
   if (lines.length === 0) return null;
 
   const key = cacheKey
@@ -366,6 +430,7 @@ export async function romanizeLines(
 
   const chunks = chunkLines(lines);
   if (chunks.length > MAX_CHUNKS) {
+    lastTranslateError = "Lyrics exceed maximum length";
     logInternalWarn("romanizeLines refused an oversized request", {
       lineCount: lines.length,
       chunkCount: chunks.length,
@@ -397,6 +462,9 @@ export async function romanizeLines(
         romanized.push(...aligned);
         anyAligned = true;
       } else {
+        if (result !== null) {
+          lastTranslateError = "Could not align romanized lines";
+        }
         romanized.push(...chunk.map(() => ""));
         allAligned = false;
       }
@@ -409,11 +477,17 @@ export async function romanizeLines(
     }
   }
 
-  if (!anyAligned) return null;
+  if (!anyAligned) {
+    if (!lastTranslateError) {
+      lastTranslateError = "Romanization failed to load";
+    }
+    return null;
+  }
   // Only persist complete romanizations so transient network errors do not poison the cache.
   if (key && allAligned) {
     setMemoryCache(key, romanized);
     await setCachedJson(key, romanized);
   }
+  lastTranslateError = null;
   return romanized;
 }

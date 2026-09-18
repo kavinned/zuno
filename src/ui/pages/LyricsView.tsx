@@ -7,6 +7,7 @@ import {
     useRef,
     useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useReduceMotion } from "../settings/renderEffects";
 import { cn } from "@/lib/utils";
 import {
@@ -53,6 +54,7 @@ import {
     needsRomanization,
     getCachedTranslationsSync,
     isTranslationCached,
+    getLastTranslateError,
 } from "../../datasource/translate";
 import {
     findActiveLineIndex,
@@ -125,6 +127,27 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const [isTranslationCachedState, setIsTranslationCachedState] = useState<
         boolean | null
     >(null);
+    const [toast, setToast] = useState<string | null>(null);
+    const toastTimerRef = useRef<number | null>(null);
+
+    const showToast = useCallback((message: string, duration = 3500) => {
+        setToast(message);
+        if (toastTimerRef.current !== null) {
+            window.clearTimeout(toastTimerRef.current);
+        }
+        toastTimerRef.current = window.setTimeout(() => {
+            setToast(null);
+            toastTimerRef.current = null;
+        }, duration);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (toastTimerRef.current !== null) {
+                window.clearTimeout(toastTimerRef.current);
+            }
+        };
+    }, []);
 
     const [lyrics, setLyrics] = useState<Lyrics | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -180,6 +203,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         let cancelled = false;
         setLyrics(null);
         setFailed(false);
+        setToast(null);
+        if (toastTimerRef.current !== null) {
+            window.clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+        }
         setActiveIndex(-1);
         setFocusIndex(null);
         lineRefs.current = [];
@@ -418,9 +446,20 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
             void romanizeLines(lineTexts, track.id)
                 .then((result) => {
-                    if (!cancelled) setTranslations(result);
+                    if (cancelled) return;
+                    if (result) {
+                        setTranslations(result);
+                    } else {
+                        const reason = getLastTranslateError();
+                        showToast(
+                            reason
+                                ? `Could not load romanized lyrics: ${reason}`
+                                : "Could not load romanized lyrics",
+                        );
+                    }
                 })
                 .catch((error) => {
+                    if (cancelled) return;
                     logInternalWarn("LyricsView romanization failed", {
                         trackId: track.id,
                         error:
@@ -428,13 +467,25 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                 ? error.message
                                 : String(error),
                     });
+                    showToast("Could not load romanized lyrics");
                 });
         } else {
             void translateLines(lineTexts, translationLang, track.id)
                 .then((result) => {
-                    if (!cancelled) setTranslations(result);
+                    if (cancelled) return;
+                    if (result) {
+                        setTranslations(result);
+                    } else {
+                        const reason = getLastTranslateError();
+                        showToast(
+                            reason
+                                ? `Could not load translated lyrics: ${reason}`
+                                : "Could not load translated lyrics",
+                        );
+                    }
                 })
                 .catch((error) => {
+                    if (cancelled) return;
                     logInternalWarn("LyricsView translation failed", {
                         trackId: track.id,
                         error:
@@ -442,6 +493,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                 ? error.message
                                 : String(error),
                     });
+                    showToast("Could not load translated lyrics");
                 });
         }
 
@@ -983,6 +1035,16 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                     <LyricsOffsetControl trackId={track.id} offset={offset} />
                 )}
             </footer>
+            {toast &&
+                createPortal(
+                    <div
+                        className="fixed bottom-16 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-2 rounded-full bg-popover/95 px-4 py-2 text-sm text-foreground shadow-2xl backdrop-blur"
+                        role="status"
+                    >
+                        <span>{toast}</span>
+                    </div>,
+                    document.body,
+                )}
         </section>
     );
 }
