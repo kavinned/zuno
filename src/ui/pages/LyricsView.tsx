@@ -57,6 +57,7 @@ import {
     getLastTranslateError,
 } from "../../datasource/translate";
 import {
+    computeCacheBadge,
     findActiveLineIndex,
     getLineProgress,
     isSyncedLyrics,
@@ -127,6 +128,10 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const [isTranslationCachedState, setIsTranslationCachedState] = useState<
         boolean | null
     >(null);
+    const [isLyricsCachedState, setIsLyricsCachedState] = useState<
+        boolean | null
+    >(null);
+    const lyricsCacheTimerRef = useRef<number | null>(null);
     const [toast, setToast] = useState<string | null>(null);
     const toastTimerRef = useRef<number | null>(null);
 
@@ -145,6 +150,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         return () => {
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
+            }
+            if (lyricsCacheTimerRef.current !== null) {
+                window.clearTimeout(lyricsCacheTimerRef.current);
             }
         };
     }, []);
@@ -203,6 +211,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         let cancelled = false;
         setLyrics(null);
         setFailed(false);
+        setIsLyricsCachedState(null);
+        if (lyricsCacheTimerRef.current !== null) {
+            window.clearTimeout(lyricsCacheTimerRef.current);
+            lyricsCacheTimerRef.current = null;
+        }
         setToast(null);
         if (toastTimerRef.current !== null) {
             window.clearTimeout(toastTimerRef.current);
@@ -219,15 +232,36 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         void playerController
             .getLyrics(track)
             .then((result) => {
-                if (!cancelled) setLyrics(result);
+                if (cancelled) return;
+                setLyrics(result);
+                if (result?.cached) {
+                    setIsLyricsCachedState(true);
+                } else if (
+                    result?.timing === "synced" &&
+                    (result.lines?.length ?? 0) > 0
+                ) {
+                    // Synced lyrics are saved to local cache upon network completion.
+                    // Start as live ("Not cached"), then transition to cached so the user sees the update.
+                    setIsLyricsCachedState(false);
+                    lyricsCacheTimerRef.current = window.setTimeout(() => {
+                        if (!cancelled) {
+                            setIsLyricsCachedState(true);
+                        }
+                        lyricsCacheTimerRef.current = null;
+                    }, 600);
+                } else {
+                    setIsLyricsCachedState(false);
+                }
             })
             .catch((error) => {
+                if (cancelled) return;
                 logInternalWarn("LyricsView load failed", {
                     trackId: track.id,
                     error:
                         error instanceof Error ? error.message : String(error),
                 });
-                if (!cancelled) setFailed(true);
+                setFailed(true);
+                setIsLyricsCachedState(false);
             })
             .finally(() => {
                 if (!cancelled) setIsLoading(false);
@@ -235,6 +269,10 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
         return () => {
             cancelled = true;
+            if (lyricsCacheTimerRef.current !== null) {
+                window.clearTimeout(lyricsCacheTimerRef.current);
+                lyricsCacheTimerRef.current = null;
+            }
         };
     }, [track?.id, reloadToken]);
 
@@ -436,7 +474,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
         void isTranslationCached(lineTexts, translationLang, track.id).then(
             (cached) => {
-                if (!cancelled) setIsTranslationCachedState(cached);
+                if (!cancelled) {
+                    setIsTranslationCachedState((prev) =>
+                        prev === true ? true : cached,
+                    );
+                }
             },
         );
 
@@ -449,6 +491,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                     if (cancelled) return;
                     if (result) {
                         setTranslations(result);
+                        setIsTranslationCachedState(true);
                     } else {
                         const reason = getLastTranslateError();
                         showToast(
@@ -475,6 +518,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                     if (cancelled) return;
                     if (result) {
                         setTranslations(result);
+                        setIsTranslationCachedState(true);
                     } else {
                         const reason = getLastTranslateError();
                         showToast(
@@ -632,42 +676,22 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         (translationLang !== ROMANIZATION_MODE ||
             needsRomanization(lines.map((l) => l.text)));
 
-    const lyricsCached = Boolean(lyrics?.cached);
+    const lyricsCached =
+        isLyricsCachedState !== null
+            ? isLyricsCachedState
+            : Boolean(lyrics?.cached);
     const transCached = Boolean(isTranslationCachedState);
 
-    let cacheBadgeLabel: string | null = null;
-    let cacheBadgeTooltip: string | null = null;
-    let isCachePositive = false;
-
-    if (hasLines) {
-        if (!translationActive) {
-            isCachePositive = lyricsCached;
-            cacheBadgeLabel = lyricsCached ? "Cached" : "Not cached";
-            cacheBadgeTooltip = lyricsCached
-                ? "Lyrics loaded from local disk cache"
-                : "Lyrics fetched live from provider";
-        } else {
-            if (lyricsCached && transCached) {
-                isCachePositive = true;
-                cacheBadgeLabel = "Cached";
-                cacheBadgeTooltip = "Lyrics and translation loaded from cache";
-            } else if (lyricsCached) {
-                isCachePositive = true;
-                cacheBadgeLabel = "Lyrics cached";
-                cacheBadgeTooltip =
-                    "Lyrics loaded from cache; translation fetched live";
-            } else if (transCached) {
-                isCachePositive = true;
-                cacheBadgeLabel = "Translation cached";
-                cacheBadgeTooltip =
-                    "Translation loaded from cache; lyrics fetched live";
-            } else {
-                isCachePositive = false;
-                cacheBadgeLabel = "Not cached";
-                cacheBadgeTooltip = "Lyrics and translation fetched live";
-            }
-        }
-    }
+    const {
+        label: cacheBadgeLabel,
+        tooltip: cacheBadgeTooltip,
+        isPositive: isCachePositive,
+    } = computeCacheBadge(
+        hasLines,
+        translationActive,
+        lyricsCached,
+        transCached,
+    );
     const emptyMessage = !isOnline
         ? "You're offline. Lyrics need a connection."
         : failed

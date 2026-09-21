@@ -19,7 +19,7 @@ function equal(actual: unknown, expected: unknown, message: string): void {
   check(actual === expected, `${message}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
-const { findActiveLineIndex, getLineProgress, isSyncedLyrics } = await import("./lyricsTiming");
+const { computeCacheBadge, findActiveLineIndex, getLineProgress, isSyncedLyrics } = await import("./lyricsTiming");
 
 const LINES = [
   { text: "first", startTimeSec: 10 },
@@ -81,5 +81,20 @@ equal(
   "a zero-length line is already finished, not a divide by zero",
 );
 equal(getLineProgress([{ text: "a" }], 0, 5), 0, "an untimed line never sweeps");
+
+// computeCacheBadge tests
+equal(computeCacheBadge(false, false, false, false).label, null, "no lines yields null label");
+equal(computeCacheBadge(true, false, false, false).label, "Not cached", "untranslated uncached yields Not cached");
+equal(computeCacheBadge(true, false, false, false).isPositive, false, "untranslated uncached is not positive");
+equal(computeCacheBadge(true, false, true, false).label, "Cached", "untranslated cached yields Cached");
+equal(computeCacheBadge(true, false, true, false).isPositive, true, "untranslated cached is positive");
+
+equal(computeCacheBadge(true, true, false, false).label, "Not cached", "translated none cached yields Not cached");
+equal(computeCacheBadge(true, true, true, false).label, "Lyrics cached", "translated lyrics cached yields Lyrics cached");
+equal(computeCacheBadge(true, true, true, false).isPositive, true, "translated lyrics cached is positive");
+equal(computeCacheBadge(true, true, false, true).label, "Translation cached", "translated trans cached yields Translation cached");
+equal(computeCacheBadge(true, true, false, true).isPositive, true, "translated trans cached is positive");
+equal(computeCacheBadge(true, true, true, true).label, "Cached", "translated both cached yields Cached");
+equal(computeCacheBadge(true, true, true, true).isPositive, true, "translated both cached is positive");
 
 console.log("lyricsTiming self-check passed");

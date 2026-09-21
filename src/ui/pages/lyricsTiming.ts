@@ -60,3 +60,60 @@ export function findActiveLineIndex(lines: LyricLine[], timeSec: number): number
   }
   return active;
 }
+
+export interface CacheBadgeInfo {
+  label: string | null;
+  tooltip: string | null;
+  isPositive: boolean;
+}
+
+export function computeCacheBadge(
+  hasLines: boolean,
+  translationActive: boolean,
+  lyricsCached: boolean,
+  transCached: boolean,
+): CacheBadgeInfo {
+  if (!hasLines) {
+    return { label: null, tooltip: null, isPositive: false };
+  }
+
+  if (!translationActive) {
+    return {
+      isPositive: lyricsCached,
+      label: lyricsCached ? "Cached" : "Not cached",
+      tooltip: lyricsCached
+        ? "Lyrics loaded from local disk cache"
+        : "Lyrics fetched live from provider",
+    };
+  }
+
+  if (lyricsCached && transCached) {
+    return {
+      isPositive: true,
+      label: "Cached",
+      tooltip: "Lyrics and translation loaded from cache",
+    };
+  }
+
+  if (lyricsCached) {
+    return {
+      isPositive: true,
+      label: "Lyrics cached",
+      tooltip: "Lyrics loaded from cache; translation fetched live",
+    };
+  }
+
+  if (transCached) {
+    return {
+      isPositive: true,
+      label: "Translation cached",
+      tooltip: "Translation loaded from cache; lyrics fetched live",
+    };
+  }
+
+  return {
+    isPositive: false,
+    label: "Not cached",
+    tooltip: "Lyrics and translation fetched live",
+  };
+}
