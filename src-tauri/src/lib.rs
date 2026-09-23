@@ -1103,6 +1103,20 @@ fn local_audio_read(path: String) -> Result<AudioPayload, CommandError> {
     })
 }
 
+/// Returns the text content of a `.vtt` file that sits next to the audio file, or `null`
+/// when no such sibling exists. The frontend VTT parser converts the text to `LyricLine[]`.
+#[tauri::command]
+fn local_vtt_read(path: String) -> Result<Option<String>, CommandError> {
+    let vtt_path = PathBuf::from(&path).with_extension("vtt");
+    if !vtt_path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&vtt_path).map_err(|error| CommandError {
+        message: format!("vtt read failed: {error}"),
+    })?;
+    Ok(Some(text))
+}
+
 fn cache_root(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
     app.path()
         .app_cache_dir()
@@ -5417,6 +5431,7 @@ pub fn run() {
             cache_clear,
             local_audio_scan,
             local_audio_read,
+            local_vtt_read,
             read_text_file,
             write_text_file,
             local_audio_read_tags,
