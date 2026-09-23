@@ -75,6 +75,7 @@ import {
   setLiveCookie,
   tauriFetch,
 } from "./tauriFetch";
+import { parseVtt } from "./localVtt";
 
 type ClientLabel = "music" | "web" | "download";
 type NativeAudioPayload = {
@@ -4614,6 +4615,28 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   async getLyrics(track: Track): Promise<Lyrics> {
+    /*
+     * Local files: look for a .vtt sibling before hitting the network.
+     *
+     * If a file with the same name and a .vtt extension exists next to the
+     * audio file, parse and return it immediately — no cache, no network.
+     * When there is no sibling, return an empty result so the lyrics screen
+     * shows "no lyrics" rather than trying (and failing) to match a local
+     * track against an online provider.
+     */
+    if (track.source === "local" && track.localPath) {
+      const vttText = await invoke<string | null>("local_vtt_read", { path: track.localPath });
+      if (vttText) {
+        return {
+          lines: parseVtt(vttText),
+          timing: "synced",
+          sourceLabel: "VTT file",
+          sourceId: "local-vtt",
+        };
+      }
+      return { lines: [], timing: "none", sourceLabel: "No lyrics file", sourceId: "local-vtt" };
+    }
+
     /*
      * v3: the cached shape now carries the per-source attempt log, and a v2 entry would
      * leave the lyrics screen unable to say where its words came from.
