@@ -1278,12 +1278,20 @@ export class PlayerController {
         if (!audioData) {
           throw new Error("The data source does not support local audio playback.");
         }
+        /*
+         * Local files always use the native <audio> element regardless of the engine setting.
+         *
+         * Rust's decoder rejects certain formats (e.g. M4A/AAC) at playback time, not at load
+         * time — so a try/catch around the load call never fires. The WebView's native <audio>
+         * delegates to the OS codec stack and handles everything the OS can play. Passing
+         * undefined for rustSource makes loadNativeFallback skip the Rust branch entirely.
+         */
         await this.audioEngine.loadNativeFallback(
           track.id,
           audioData.bytes,
           audioData.mimeType,
           audioData.sourceUrl,
-          audioData.rustSource,
+          undefined, // skip Rust — always use native <audio> for local files
           track.durationSec,
         );
         this.loadedTrackId = track.id;

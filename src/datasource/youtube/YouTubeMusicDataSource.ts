@@ -6271,10 +6271,14 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   async getStreamData(track: Track): Promise<StreamData> {
-    if (usesRustAudioEngine()) {
-      return this.getRustStreamData(track);
-    }
-
+    /*
+     * Local files always read bytes via local_audio_read, regardless of engine.
+     *
+     * The Rust engine check used to come first, which routed local files to
+     * getRustStreamData — that returns only a file path (rustSource), not bytes.
+     * Native <audio> needs actual bytes, so local must be resolved before the
+     * Rust branch is reached.
+     */
     if (track.source === "local") {
       if (!track.localPath) {
         throw new Error("Local track path is missing.");
@@ -6293,6 +6297,10 @@ export class YouTubeMusicDataSource extends DataSource {
         ) as ArrayBuffer,
         mimeType: payload.mimeType,
       };
+    }
+
+    if (usesRustAudioEngine()) {
+      return this.getRustStreamData(track);
     }
 
     /*
