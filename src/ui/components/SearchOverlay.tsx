@@ -7,6 +7,7 @@ import { TrackArtwork } from "./TrackArtwork";
 import { useTrackContextMenu } from "./TrackContextMenu";
 import { isMacOS, primaryModifierLabel } from "../platform";
 import { usePlaylistContextMenu } from "./PlaylistContextMenu";
+import { useSearchSuggestionsEnabled } from "../settings/searchSuggestions";
 
 const RECENT_SEARCHES_KEY = "yt-music-dock:recent-searches";
 const MAX_RECENT_SEARCHES = 5;
@@ -82,6 +83,7 @@ export function SearchOverlay({
 }: SearchOverlayProps) {
   const { openTrackMenu } = useTrackContextMenu();
   const { openPlaylistMenu, openAlbumMenu } = usePlaylistContextMenu();
+  const searchSuggestionsEnabled = useSearchSuggestionsEnabled();
   const inputRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef(0);
   const modifiersRef = useRef({ primary: false, shift: false });
@@ -133,7 +135,7 @@ export function SearchOverlay({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen || query.trim().length < 2) {
+    if (!isOpen || !searchSuggestionsEnabled || query.trim().length < 2) {
       requestIdRef.current += 1;
       setSearchResults({ artists: [], tracks: [], albums: [], playlists: [] });
       setSuggestions([]);
@@ -170,10 +172,10 @@ export function SearchOverlay({
         .finally(() => {
           if (requestId === requestIdRef.current) setIsLoading(false);
         });
-    }, 200);
+    }, 400);
 
     return () => window.clearTimeout(timeoutId);
-  }, [isOpen, query, searchController]);
+  }, [isOpen, query, searchController, searchSuggestionsEnabled]);
 
   if (!isOpen) return null;
 
@@ -301,7 +303,7 @@ export function SearchOverlay({
       || modifiersRef.current.primary
       || modifiersRef.current.shift;
 
-    if (selectedIndex === 0) {
+    if (selectedIndex === 0 || !searchSuggestionsEnabled) {
       submitQuery(query, openInNewTab);
       return;
     }
@@ -324,6 +326,40 @@ export function SearchOverlay({
     const recentSearch = visibleRecentSearches[recentSearchIndex];
     if (recentSearch) submitQuery(recentSearch, openInNewTab);
   };
+
+  if (!searchSuggestionsEnabled) {
+    return (
+      <div
+        className="fixed inset-0 z-[70] flex items-start justify-center pt-[25vh] bg-muted/40 backdrop-blur-sm"
+        onMouseDown={onDismiss ?? onClose}
+      >
+        <section
+          className="w-[min(32rem,92vw)] rounded-2xl bg-card shadow-2xl border border-border/40 overflow-hidden"
+          data-onboarding="search-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Search artists, songs, playlists, and albums"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center gap-2.5 px-4 py-3 bg-muted/50 text-muted-foreground [&_input]:min-w-0 [&_input]:flex-1 [&_input]:bg-transparent [&_input]:text-base [&_input]:text-foreground [&_input]:outline-none">
+            <SearchIcon size={21} />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                onQueryChange?.(event.target.value);
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder="Search artists, songs, playlists, and albums"
+              aria-label="Search artists, songs, playlists, and albums"
+              autoFocus
+            />
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[70] flex justify-center bg-muted/40 pt-[12vh] backdrop-blur-sm" onMouseDown={onDismiss ?? onClose}>
