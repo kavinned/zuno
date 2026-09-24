@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { SpinnerSteps } from "@/components/motion/loader";
 import { Marquee } from "@/components/motion/marquee";
 import { cn } from "@/lib/utils";
@@ -11,8 +11,12 @@ import {
   PlaylistIcon,
   SearchIcon,
 } from "@/ui/icons";
-import { shallowEqual, usePlayerSelector } from "../../../player/playerStore";
-import { useLibraryState } from "../../../player/playerStore";
+import {
+  libraryController,
+  shallowEqual,
+  useLibraryState,
+  usePlayerSelector,
+} from "../../../player/playerStore";
 import { usePlayerUIState } from "../../stores/playerUIStore";
 import { TrackArtwork } from "../TrackArtwork";
 import { ArtistLinks } from "../ArtistLinks";
@@ -27,27 +31,41 @@ import {
   isLocalPlaylist,
   subscribeToLocalPlaylists,
 } from "../../../player/localPlaylists";
-import type { Playlist } from "../../../datasource/types";
+import {
+  barePlaylistId,
+  isTrackKnownInPlaylist,
+  rememberTrackInPlaylist,
+  usePlaylistMembershipVersion,
+} from "../../../player/playlistMembership";
+import { logInternalError } from "../../../internal/logging";
+import type { Playlist, Track } from "../../../datasource/types";
 
 const NO_LOCAL_PLAYLISTS: Playlist[] = [];
 const getNoLocalPlaylists = () => NO_LOCAL_PLAYLISTS;
-
-function barePlaylistId(playlistId: string): string {
-  return playlistId.replace(/^VL/, "");
-}
 
 export function TrackInfo() {
   const state = usePlayerSelector((player) => ({ currentTrack: player.currentTrack }), shallowEqual);
   const libraryState = useLibraryState();
   const uiState = usePlayerUIState();
-  const { openTrackMenu, openPlaylistPicker, toggleTrackLike, addTrackToPlaylist, showToast } =
-    useTrackContextMenu();
+  const {
+    openTrackMenu,
+    openPlaylistPicker,
+    toggleTrackLike,
+    addTrackToPlaylist,
+    showToast,
+  } = useTrackContextMenu();
   const currentTrack = state.currentTrack;
   const titleViewportRef = useRef<HTMLDivElement>(null);
   const titleTextRef = useRef<HTMLSpanElement>(null);
   const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
 
   const defaultPlaylist = useDefaultPlaylist();
+  const membershipVersion = usePlaylistMembershipVersion();
+  const [checkedMembership, setCheckedMembership] = useState<{
+    trackId: string;
+    playlistId: string;
+    isIn: boolean;
+  } | null>(null);
   const [isDefaultMenuOpen, setIsDefaultMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddingToPlaylist, setIsAddingToPlaylist] = useState(false);
@@ -93,6 +111,69 @@ export function TrackInfo() {
     return () => observer.disconnect();
   }, [currentTrack?.title]);
 
+  const targetPlaylist: Playlist | null = useMemo(() => {
+    if (!defaultPlaylist) return null;
+    return (
+      playlists.find(
+        (p) =>
+          p.id === defaultPlaylist.id
+          || barePlaylistId(p.id) === barePlaylistId(defaultPlaylist.id),
+      ) ?? {
+        id: defaultPlaylist.id,
+        title: defaultPlaylist.title,
+        owner: "",
+        kind: defaultPlaylist.id.startsWith("local-playlist:") ? "local" : "playlist",
+      }
+    );
+  }, [defaultPlaylist, playlists]);
+
+  const isCurrentTrackInPlaylist = useMemo(() => {
+    if (!currentTrack || !targetPlaylist) return false;
+    if (isTrackKnownInPlaylist(currentTrack, targetPlaylist)) return true;
+    if (
+      checkedMembership
+      && checkedMembership.trackId === currentTrack.id
+      && barePlaylistId(checkedMembership.playlistId) === barePlaylistId(targetPlaylist.id)
+    ) {
+      return checkedMembership.isIn;
+    }
+    return false;
+  }, [currentTrack, targetPlaylist, checkedMembership, membershipVersion]);
+
+  useEffect(() => {
+    if (!currentTrack || !targetPlaylist) return;
+    if (isLocalPlaylist(targetPlaylist) || currentTrack.source === "local") return;
+    if (isTrackKnownInPlaylist(currentTrack, targetPlaylist)) return;
+
+    let active = true;
+
+    const checkTracks = (tracks: Track[]) => {
+      if (!active) return;
+      const inPlaylist = tracks.some(
+        (t) => t.id === currentTrack.id || (Boolean(currentTrack.localPath) && t.localPath === currentTrack.localPath),
+      );
+      setCheckedMembership({
+        trackId: currentTrack.id,
+        playlistId: targetPlaylist.id,
+        isIn: inPlaylist,
+      });
+      if (inPlaylist) {
+        rememberTrackInPlaylist(currentTrack, targetPlaylist);
+      }
+    };
+
+    void libraryController
+      .getPlaylistTracks(targetPlaylist, checkTracks)
+      .then(checkTracks)
+      .catch((error: unknown) => {
+        logInternalError("TrackInfo.checkDefaultPlaylist failed", error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentTrack?.id, targetPlaylist?.id, membershipVersion]);
+
   if (!currentTrack) {
     return null;
   }
@@ -115,11 +196,7 @@ export function TrackInfo() {
       return;
     }
 
-    const target = playlists.find(
-      (p) =>
-        p.id === defaultPlaylist.id
-        || barePlaylistId(p.id) === barePlaylistId(defaultPlaylist.id),
-    ) ?? {
+    const target = targetPlaylist ?? {
       id: defaultPlaylist.id,
       title: defaultPlaylist.title,
       owner: "",
@@ -134,6 +211,11 @@ export function TrackInfo() {
     setIsAddingToPlaylist(true);
     try {
       await addTrackToPlaylist(currentTrack, target);
+      setCheckedMembership({
+        trackId: currentTrack.id,
+        playlistId: target.id,
+        isIn: true,
+      });
     } finally {
       setIsAddingToPlaylist(false);
     }
@@ -146,7 +228,9 @@ export function TrackInfo() {
   };
 
   const playlistButtonTitle = defaultPlaylist
-    ? `Add to ${defaultPlaylist.title}\n(Right-click to change default)`
+    ? isCurrentTrackInPlaylist
+      ? `In ${defaultPlaylist.title}\n(Right-click to change default)`
+      : `Add to ${defaultPlaylist.title}\n(Right-click to change default)`
     : "Add to playlist\n(Right-click to set default)";
 
   return (
@@ -249,13 +333,19 @@ export function TrackInfo() {
               className={cn(
                 "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors",
                 "disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "text-muted-foreground hover:text-foreground",
+                isCurrentTrackInPlaylist
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-foreground",
               )}
               onClick={(e) => void handleAddToPlaylistClick(e)}
               onContextMenu={handleButtonContextMenu}
               disabled={isAddingToPlaylist}
               aria-label={
-                defaultPlaylist ? `Add to ${defaultPlaylist.title}` : "Add to playlist"
+                defaultPlaylist
+                  ? isCurrentTrackInPlaylist
+                    ? `In ${defaultPlaylist.title}`
+                    : `Add to ${defaultPlaylist.title}`
+                  : "Add to playlist"
               }
               title={playlistButtonTitle}
             >
