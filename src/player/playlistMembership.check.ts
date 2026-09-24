@@ -74,4 +74,20 @@ equal(Object.keys(pruned).length, 1000);
 equal(isTrackKnownInPlaylist(track("t1199"), playlist("p1")), true);
 equal(isTrackKnownInPlaylist(track("t0"), playlist("p1")), false);
 
+// Batch remembering playlist memberships
+const { rememberTrackInPlaylists } = await import("./playlistMembership.ts");
+rememberTrackInPlaylists(track("batch-track"), ["p1", "p2", "p3"]);
+equal(isTrackKnownInPlaylist(track("batch-track"), playlist("p1")), true);
+equal(isTrackKnownInPlaylist(track("batch-track"), playlist("p2")), true);
+equal(isTrackKnownInPlaylist(track("batch-track"), playlist("p3")), true);
+equal(isTrackKnownInPlaylist(track("batch-track"), playlist("p4")), false);
+
+// VL prefix normalization
+rememberTrackInPlaylist(track("vl-track"), playlist("VLPL100"));
+equal(isTrackKnownInPlaylist(track("vl-track"), playlist("PL100")), true);
+equal(isTrackKnownInPlaylist(track("vl-track"), playlist("VLPL100")), true);
+forgetTrackInPlaylist(track("vl-track"), playlist("PL100"));
+equal(isTrackKnownInPlaylist(track("vl-track"), playlist("PL100")), false);
+equal(isTrackKnownInPlaylist(track("vl-track"), playlist("VLPL100")), false);
+
 console.log("playlistMembership: ok");
