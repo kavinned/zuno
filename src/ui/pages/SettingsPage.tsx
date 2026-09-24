@@ -32,6 +32,10 @@ import {
   useSessionRestoreEnabled,
 } from "../settings/sessionRestore";
 import {
+  setSearchSuggestionsEnabled,
+  useSearchSuggestionsEnabled,
+} from "../settings/searchSuggestions";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -755,6 +759,7 @@ export function SettingsPage({
   const crossfadeSec = useCrossfadeSec();
   const gaplessEnabled = useGaplessEnabled();
   const sessionRestoreEnabled = useSessionRestoreEnabled();
+  const searchSuggestionsEnabled = useSearchSuggestionsEnabled();
   const extraPlayerControlsAlwaysVisible = useExtraPlayerControlsAlwaysVisible();
   const compactPlayerBar = useCompactPlayerBar();
   const windowsStyleWindowControls = useWindowsStyleWindowControls();
@@ -2139,6 +2144,13 @@ export function SettingsPage({
               description="Keep lyrics and queue visible instead of showing them only on hover."
               checked={extraPlayerControlsAlwaysVisible}
               onCheckedChange={setExtraPlayerControlsAlwaysVisible}
+            />
+
+            <SettingToggle
+              title="Search suggestions"
+              description="Show live suggestions and a top-result preview while you type. Turning this off gives a minimal search bar with no network activity until you press Enter."
+              checked={searchSuggestionsEnabled}
+              onCheckedChange={setSearchSuggestionsEnabled}
             />
           </section>
         </div>
