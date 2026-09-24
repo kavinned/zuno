@@ -93,11 +93,11 @@ export function SearchResultsPage({
 }) {
   const { openTrackMenu } = useTrackContextMenu();
   const { openPlaylistMenu, openAlbumMenu } = usePlaylistContextMenu();
-  const [scope, setScope] = useState<SearchScope>("all");
+  const [scope, setScope] = useState<SearchScope>("songs");
 
   // A scope from the previous query is meaningless against the next one, and silently hiding
   // results the new search did find is the worst outcome.
-  useEffect(() => setScope("all"), [query]);
+  useEffect(() => setScope("songs"), [query]);
 
   /*
    * A filtered search, run when a category tab is opened.
