@@ -820,12 +820,12 @@ export function TrackContextMenuProvider({
                     ) : isMember ? (
                       /* Still clickable: this only means we *know* it is in there. Adding again
                          is harmless and answers "Already in playlist". */
-                      <span
-                        className="grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground"
-                        title="Already in this playlist"
-                      >
-                        <CheckIcon size={13} aria-hidden="true" />
-                        <span className="sr-only">Already in this playlist</span>
+                      <span title="Already in this playlist" className="flex shrink-0 items-center">
+                        <CheckIcon
+                          size={18}
+                          className="text-primary"
+                          aria-hidden="true"
+                        />
                       </span>
                     ) : null}
                   </button>
