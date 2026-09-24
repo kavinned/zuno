@@ -1,7 +1,9 @@
+import { useSyncExternalStore } from "react";
 import type { Playlist, Track } from "../datasource/types";
-import { getLocalTracksForPlaylist, isLocalPlaylist } from "./localPlaylists";
+import { getLocalPlaylist, getLocalTracksForPlaylist, isLocalPlaylist } from "./localPlaylists";
 
 const STORAGE_KEY = "ytc-playlist-membership-v1";
+export const PLAYLIST_MEMBERSHIP_CHANGE_EVENT = "ytc-playlist-membership-change";
 
 /**
  * Bound on remembered tracks. Entries are tiny (an id and a handful of playlist ids), and
@@ -14,6 +16,7 @@ type MembershipRecord = Record<string, string[]>;
 
 let cachedRaw: string | null = null;
 let cached: MembershipRecord = {};
+let membershipVersion = 0;
 
 function read(): MembershipRecord {
   if (typeof window === "undefined") return {};
@@ -49,7 +52,33 @@ function write(next: MembershipRecord): void {
 
   cachedRaw = JSON.stringify(pruned);
   cached = pruned;
+  membershipVersion += 1;
   localStorage.setItem(STORAGE_KEY, cachedRaw);
+  if (typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(PLAYLIST_MEMBERSHIP_CHANGE_EVENT));
+  }
+}
+
+export function subscribeToPlaylistMembership(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(PLAYLIST_MEMBERSHIP_CHANGE_EVENT, callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener(PLAYLIST_MEMBERSHIP_CHANGE_EVENT, callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+export function getPlaylistMembershipVersion(): number {
+  return membershipVersion;
+}
+
+export function usePlaylistMembershipVersion(): number {
+  return useSyncExternalStore(subscribeToPlaylistMembership, getPlaylistMembershipVersion, () => 0);
+}
+
+export function barePlaylistId(playlistId: string): string {
+  return playlistId.replace(/^VL/, "");
 }
 
 /**
@@ -66,12 +95,14 @@ function write(next: MembershipRecord): void {
 export function isTrackKnownInPlaylist(track: Track, playlist: Playlist): boolean {
   if (isLocalPlaylist(playlist)) {
     if (!track.localPath) return false;
-    return (playlist.localPaths ?? []).includes(track.localPath);
+    const paths = playlist.localPaths ?? getLocalPlaylist(playlist.id)?.paths ?? [];
+    return paths.includes(track.localPath);
   }
   if (track.source === "local") {
     return getLocalTracksForPlaylist(playlist).some((item) => item.localPath === track.localPath);
   }
-  return read()[track.id]?.includes(playlist.id) ?? false;
+  const targetBare = barePlaylistId(playlist.id);
+  return read()[track.id]?.some((id) => barePlaylistId(id) === targetBare) ?? false;
 }
 
 /** Records a confirmed add. Local membership is derived from storage, so it is skipped. */
@@ -80,18 +111,44 @@ export function rememberTrackInPlaylist(track: Track, playlist: Playlist): void 
 
   const current = read();
   const existing = current[track.id] ?? [];
-  if (existing.includes(playlist.id)) return;
+  const targetBare = barePlaylistId(playlist.id);
+  if (existing.some((id) => barePlaylistId(id) === targetBare)) return;
 
   // Re-inserting the key moves it to the end, which is what keeps pruning oldest-first.
   const { [track.id]: _dropped, ...rest } = current;
   write({ ...rest, [track.id]: [...existing, playlist.id] });
 }
 
+/** Records multiple confirmed playlist memberships at once for a track. */
+export function rememberTrackInPlaylists(track: Track, playlistIds: string[]): void {
+  if (track.source === "local" || playlistIds.length === 0) return;
+
+  const current = read();
+  const existing = current[track.id] ?? [];
+  const bareExisting = new Set(existing.map(barePlaylistId));
+  const toAdd: string[] = [];
+  for (const id of playlistIds) {
+    const bare = barePlaylistId(id);
+    if (!bareExisting.has(bare)) {
+      bareExisting.add(bare);
+      toAdd.push(id);
+    }
+  }
+  if (toAdd.length === 0) return;
+
+  const { [track.id]: _dropped, ...rest } = current;
+  write({ ...rest, [track.id]: [...existing, ...toAdd] });
+}
+
 /** Forgets a membership so removing a song from a playlist clears its tick. */
 export function forgetTrackInPlaylist(track: Track, playlist: Playlist): void {
   const current = read();
   const existing = current[track.id];
-  if (!existing?.includes(playlist.id)) return;
+  const targetBare = barePlaylistId(playlist.id);
+  if (!existing?.some((id) => barePlaylistId(id) === targetBare)) return;
 
-  write({ ...current, [track.id]: existing.filter((id) => id !== playlist.id) });
+  write({
+    ...current,
+    [track.id]: existing.filter((id) => barePlaylistId(id) !== targetBare),
+  });
 }
