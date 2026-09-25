@@ -169,6 +169,23 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const scrollerRef = useRef<HTMLDivElement>(null);
     const lineRefs = useRef<Array<HTMLElement | null>>([]);
     const resumeTimerRef = useRef<number | null>(null);
+    const containerRef = useRef<HTMLElement | null>(null);
+    const [isWideLayout, setIsWideLayout] = useState(() =>
+        typeof window !== "undefined" ? window.innerWidth >= 896 : true,
+    );
+
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        const observer = new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect.width;
+            if (width !== undefined) {
+                setIsWideLayout(width >= 896);
+            }
+        });
+        observer.observe(container);
+        return () => observer.disconnect();
+    }, []);
 
     const lines = lyrics?.lines ?? [];
     const isSynced = isSyncedLyrics(lyrics);
@@ -700,6 +717,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
     return (
         <section
+            ref={containerRef}
             className="@container/lyrics relative flex h-full min-h-0 w-full flex-col overflow-hidden"
             aria-label="Lyrics"
         >
@@ -790,52 +808,56 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
             <div className="relative flex min-h-0 flex-1 flex-col @4xl/lyrics:flex-row">
                 {/* Wide enough for two columns: the song gets a poster, the lyrics get the rest. */}
-                <aside className="hidden shrink-0 flex-col gap-6 px-8 py-8 @4xl/lyrics:flex @4xl/lyrics:w-[19rem] @6xl/lyrics:w-[22rem]">
-                    <TrackArtwork
-                        artworkUrl={track?.artworkUrl}
-                        size={288}
-                        className="aspect-square w-full   shadow-2xl shadow-black/50"
-                        iconSize={40}
-                        loading="eager"
-                    />
-                    <div className="min-w-0">
-                        <h1 className="text-balance text-2xl font-bold leading-tight tracking-[-0.03em] text-foreground">
-                            {track?.title ?? "Nothing playing"}
-                        </h1>
-                        {track && (
-                            <p className="mt-1.5 text-sm text-muted-foreground">
-                                <ArtistLinks
-                                    artists={track.artists}
-                                    fallback={track.artist}
-                                />
-                            </p>
-                        )}
-                    </div>
-                </aside>
+                {isWideLayout && (
+                    <aside className="hidden shrink-0 flex-col gap-6 px-8 py-8 @4xl/lyrics:flex @4xl/lyrics:w-[19rem] @6xl/lyrics:w-[22rem]">
+                        <TrackArtwork
+                            artworkUrl={track?.artworkUrl}
+                            size={288}
+                            className="aspect-square w-full   shadow-2xl shadow-black/50"
+                            iconSize={40}
+                            loading="eager"
+                        />
+                        <div className="min-w-0">
+                            <h1 className="text-balance text-2xl font-bold leading-tight tracking-[-0.03em] text-foreground">
+                                {track?.title ?? "Nothing playing"}
+                            </h1>
+                            {track && (
+                                <p className="mt-1.5 text-sm text-muted-foreground">
+                                    <ArtistLinks
+                                        artists={track.artists}
+                                        fallback={track.artist}
+                                    />
+                                </p>
+                            )}
+                        </div>
+                    </aside>
+                )}
 
                 {/* Narrow: the poster would eat the column, so the song identifies itself in a strip. */}
-                <header className="flex shrink-0 items-center gap-3.5 px-6 pb-3 pr-16 pt-5 @4xl/lyrics:hidden">
-                    <TrackArtwork
-                        artworkUrl={track?.artworkUrl}
-                        size={56}
-                        className="size-14   shadow-lg shadow-black/30"
-                        iconSize={20}
-                        loading="eager"
-                    />
-                    <div className="min-w-0 flex-1">
-                        <h1 className="truncate text-lg font-bold tracking-[-0.02em] text-foreground">
-                            {track?.title ?? "Nothing playing"}
-                        </h1>
-                        {track && (
-                            <p className="truncate text-sm text-muted-foreground">
-                                <ArtistLinks
-                                    artists={track.artists}
-                                    fallback={track.artist}
-                                />
-                            </p>
-                        )}
-                    </div>
-                </header>
+                {!isWideLayout && (
+                    <header className="flex shrink-0 items-center gap-3.5 px-6 pb-3 pr-16 pt-5 @4xl/lyrics:hidden">
+                        <TrackArtwork
+                            artworkUrl={track?.artworkUrl}
+                            size={56}
+                            className="size-14   shadow-lg shadow-black/30"
+                            iconSize={20}
+                            loading="eager"
+                        />
+                        <div className="min-w-0 flex-1">
+                            <h1 className="truncate text-lg font-bold tracking-[-0.02em] text-foreground">
+                                {track?.title ?? "Nothing playing"}
+                            </h1>
+                            {track && (
+                                <p className="truncate text-sm text-muted-foreground">
+                                    <ArtistLinks
+                                        artists={track.artists}
+                                        fallback={track.artist}
+                                    />
+                                </p>
+                            )}
+                        </div>
+                    </header>
+                )}
 
                 <div className="relative min-h-0 flex-1">
                     <div
