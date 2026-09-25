@@ -2,6 +2,7 @@ import type { Tab } from "../ui/types/tab";
 import type { TabManagerSession } from "./TabManager";
 
 const STORAGE_KEY = "yt-music-dock.app-session.v1";
+const POSITION_KEY = "zuno.playback-position.v1";
 
 export interface AppSession {
   version: 1;
@@ -9,6 +10,33 @@ export interface AppSession {
   activeTabId: string;
   nextTabId: number;
   player: TabManagerSession;
+}
+
+export interface PlaybackPositionSnapshot {
+  trackId: string;
+  positionSec: number;
+}
+
+export function savePlaybackPosition(trackId: string, positionSec: number): void {
+  try {
+    localStorage.setItem(POSITION_KEY, JSON.stringify({ trackId, positionSec }));
+  } catch {
+    // Persistence failure should not interrupt playback.
+  }
+}
+
+export function loadPlaybackPosition(): PlaybackPositionSnapshot | null {
+  try {
+    const raw = localStorage.getItem(POSITION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PlaybackPositionSnapshot | null;
+    if (parsed && typeof parsed.trackId === "string" && typeof parsed.positionSec === "number") {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function restoreWithoutAutoplay(session: AppSession): AppSession {
@@ -42,7 +70,16 @@ export function loadAppSession(): AppSession | null {
     ) {
       return null;
     }
-    return restoreWithoutAutoplay(parsed);
+    const session = restoreWithoutAutoplay(parsed);
+    const savedPos = loadPlaybackPosition();
+    if (savedPos && session.player?.players) {
+      const activePlayerId = session.player.playbackOwnerId ?? session.player.activeId;
+      const activePlayer = activePlayerId ? session.player.players[activePlayerId] : undefined;
+      if (activePlayer && activePlayer.currentTrack?.id === savedPos.trackId) {
+        activePlayer.positionSec = Math.max(0, savedPos.positionSec);
+      }
+    }
+    return session;
   } catch {
     return null;
   }
@@ -72,6 +109,7 @@ export function saveAppSession(session: AppSession): void {
 export function clearAppSession(): void {
   try {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(POSITION_KEY);
     // Or the next save would match the cleared value and decline to rewrite it.
     lastWrittenSession = null;
   } catch {
