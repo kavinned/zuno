@@ -83,10 +83,9 @@ export function rememberResolvedArtworkUrl(
   failed.delete(sourceUrl);
 
   // Oldest first, so eviction takes the coldest entry under either limit.
-  for (const oldestKey of [...resolved.keys()]) {
-    if (resolved.size <= MAX_ENTRIES && totalBlobBytes <= MAX_BLOB_BYTES) break;
-    // Never evict the entry just inserted; under a tight budget it is the one still needed.
-    if (oldestKey === sourceUrl) continue;
+  while (resolved.size > MAX_ENTRIES || totalBlobBytes > MAX_BLOB_BYTES) {
+    const oldestKey = resolved.keys().next().value;
+    if (oldestKey === undefined || oldestKey === sourceUrl) break;
     const oldestValue = resolved.get(oldestKey);
     resolved.delete(oldestKey);
     if (oldestValue !== undefined) releaseValue(oldestValue);
@@ -195,10 +194,13 @@ export function resolveArtworkThroughProxy(
 
 function releaseValue(value: string): void {
   const bytes = ownedBlobBytes.get(value);
-  if (bytes === undefined) return;
-  ownedBlobBytes.delete(value);
-  totalBlobBytes -= bytes;
-  URL.revokeObjectURL(value);
+  if (bytes !== undefined) {
+    ownedBlobBytes.delete(value);
+    totalBlobBytes -= bytes;
+  }
+  if (value.startsWith("blob:")) {
+    URL.revokeObjectURL(value);
+  }
 }
 
 /**
@@ -257,6 +259,8 @@ function persistNow(): void {
 export function clearArtworkCache(): void {
   for (const value of [...resolved.values()]) releaseValue(value);
   resolved.clear();
+  ownedBlobBytes.clear();
+  totalBlobBytes = 0;
   failed.clear();
   inFlight.clear();
   try {
