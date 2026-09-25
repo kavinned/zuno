@@ -2205,7 +2205,9 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private getPlaylistTrackCacheKey(playlistId: string): string {
-    return `youtube-music:playlist-tracks:${PLAYLIST_TRACK_CACHE_VERSION}:${playlistId}`;
+    // Normalise to the bare (non-VL) id so that VL-prefixed and bare callers
+    // share the same cache entry and never produce a phantom cache miss.
+    return `youtube-music:playlist-tracks:${PLAYLIST_TRACK_CACHE_VERSION}:${this.editablePlaylistId(playlistId)}`;
   }
 
   private async cachePlaylistTracks(playlistId: string, tracks: Track[]): Promise<Track[]> {
@@ -4351,7 +4353,7 @@ export class YouTubeMusicDataSource extends DataSource {
       await client.playlist.addVideos(this.editablePlaylistId(playlist.id), [track.id]);
 
       let confirmedTracks: Track[] | null = null;
-      for (const delayMs of [0, 500, 1500]) {
+      for (const delayMs of [0, 500, 1500, 3000]) {
         if (delayMs > 0) {
           await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delayMs));
         }
@@ -4363,11 +4365,19 @@ export class YouTubeMusicDataSource extends DataSource {
         }
       }
 
-      if (!confirmedTracks) {
-        throw new Error("YouTube Music did not confirm the playlist update.");
+      if (confirmedTracks) {
+        await setCachedJson(cacheKey, confirmedTracks);
+      } else {
+        // addVideos succeeded but the read-back didn't see the song within the
+        // retry window — YTM's eventual consistency can lag on large playlists.
+        // Treat as added so the user doesn't see a spurious error; the track
+        // will appear the next time the playlist is loaded.
+        // Ponytail: upgrade path is a longer/smarter backoff or a server-push.
+        logInternalWarn("YouTubeMusicDataSource.addTrackToPlaylist confirmation timeout, optimistically succeeding", {
+          trackId: track.id,
+          playlistId: playlist.id,
+        });
       }
-
-      await setCachedJson(cacheKey, confirmedTracks);
 
       logInternalInfo("YouTubeMusicDataSource.addTrackToPlaylist success", {
         trackId: track.id,
