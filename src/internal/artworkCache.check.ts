@@ -67,6 +67,13 @@ rememberResolvedArtworkUrl("source-c", "https://cdn/c.jpg");
 rememberResolvedArtworkUrl("source-c", "https://cdn/c-2.jpg");
 equal(revoked.length, 0, "plain URLs are never passed to revokeObjectURL");
 
+// Any blob: URL is revoked when forgotten or replaced, even if ownsObjectUrl was omitted.
+__artworkCacheForTest.reset();
+revoked.length = 0;
+rememberResolvedArtworkUrl("source-untracked", "blob:untracked");
+forgetResolvedArtworkUrl("source-untracked");
+equal(revoked.join(","), "blob:untracked", "blob: URLs are always revoked even without ownsObjectUrl option");
+
 // --- forgetting a stale entry ------------------------------------------------------------
 
 __artworkCacheForTest.reset();
