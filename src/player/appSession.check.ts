@@ -48,14 +48,15 @@ const mockSession = {
     playbackOwnerId: "tab-1",
     players: {
       "tab-1": {
-        currentTrack: { id: "track-1", title: "Song 1", artists: [], source: "youtube" as const },
+        currentTrack: { id: "track-1", title: "Song 1", artist: "Artist 1", artists: [], source: "youtube" as const },
+        history: [],
         queue: [],
         queueIndex: 0,
         positionSec: 10,
         volume: 1,
         muted: false,
         autoplayEnabled: false,
-        playbackOrderMode: "linear" as const,
+        playbackOrderMode: "in-order" as const,
         shuffleEnabled: false,
         isPlaylistMode: false,
         status: "playing" as const,
