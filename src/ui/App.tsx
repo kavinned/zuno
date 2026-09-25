@@ -58,11 +58,11 @@ import {
   searchController,
   tabManager,
   useLibraryState,
-  usePlayerSession,
+  usePlayerSessionSelector,
   usePlayerSelector,
   shallowEqual,
 } from "../player/playerStore";
-import { clearAppSession, loadAppSession, saveAppSession } from "../player/appSession";
+import { clearAppSession, loadAppSession, saveAppSession, savePlaybackPosition } from "../player/appSession";
 import { useMediaSession } from "../player/useMediaSession";
 import { LastFmService } from "../player/LastFm";
 import { playerUIStore, usePlayerUIState } from "./stores/playerUIStore";
@@ -299,7 +299,12 @@ export default function App() {
     }),
     shallowEqual,
   );
-  const playerSession = usePlayerSession();
+  const playerStructuralKey = usePlayerSessionSelector(
+    (session) =>
+      session
+        ? `${session.currentTrack?.id ?? ""}:${session.queueIndex}:${session.queue.length}:${session.shuffleEnabled}:${session.autoplayEnabled}:${session.playbackOrderMode}`
+        : "",
+  );
   /* Resolved once at startup. Null in every case except the first launch after an update —
      see resolveReleaseNoteVersion, which records silently for all the others. */
   const [releaseNoteVersion, setReleaseNoteVersion] = useState<string | null>(null);
@@ -769,26 +774,49 @@ export default function App() {
    */
   useEffect(() => {
     /*
-     * Only while playing. The one field this heartbeat exists to keep fresh is `positionSec`,
-     * and a paused or idle player's position does not move — so on a machine sitting on the
-     * home page it was rebuilding and stringifying every tab's queue and history, on a timer,
-     * to write back a number that was already correct. The effect below still persists on
-     * every real change, and the teardown here still writes on the way out.
+     * Lightweight position heartbeat: only writes { trackId, positionSec } (~40 bytes)
+     * instead of stringifying the entire multi-megabyte tab and queue graph.
      */
+    const recordPosition = () => {
+      try {
+        const active = tabManager.getActivePlayer();
+        const currentTrack = active.getState().currentTrack;
+        if (currentTrack) {
+          savePlaybackPosition(currentTrack.id, active.getCurrentTime());
+        }
+      } catch {
+        // Player may be unmounted or disposed during shutdown.
+      }
+    };
+
     const intervalId = playerState.status === "playing"
-      ? window.setInterval(persistAppSession, SESSION_HEARTBEAT_MS)
+      ? window.setInterval(recordPosition, SESSION_HEARTBEAT_MS)
       : 0;
-    window.addEventListener("beforeunload", persistAppSession);
+
+    const onBeforeUnload = () => {
+      recordPosition();
+      persistAppSession();
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener("beforeunload", persistAppSession);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      recordPosition();
       persistAppSession();
     };
   }, [persistAppSession, playerState.status]);
 
+  /*
+   * Structural session persistence: debounced so bursts of queue modifications, tab
+   * switches, or additions settle before running a full sync export.
+   */
   useEffect(() => {
-    persistAppSession();
-  }, [activeTabId, nextTabId, persistAppSession, playerSession, tabs]);
+    const timer = window.setTimeout(persistAppSession, 1000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [activeTabId, nextTabId, persistAppSession, playerStructuralKey, tabs]);
 
   useEffect(() => {
     const unlistenPromise = listen("main-window-recovery-reload", persistAppSession);
