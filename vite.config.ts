@@ -14,6 +14,7 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": resolveEntry("./src"),
+      "youtubei.js": resolveEntry("./node_modules/youtubei.js/bundle/browser.js"),
     },
   },
   build: {
@@ -21,6 +22,14 @@ export default defineConfig(async () => ({
       input: {
         main: resolveEntry("./index.html"),
         mini: resolveEntry("./mini.html"),
+      },
+      output: {
+        chunkFileNames: (chunkInfo) => {
+          if (chunkInfo.name === "browser") {
+            return "assets/vendor-youtubei-[hash].js";
+          }
+          return "assets/[name]-[hash].js";
+        },
       },
     },
   },
