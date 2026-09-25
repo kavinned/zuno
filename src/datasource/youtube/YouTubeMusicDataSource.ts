@@ -1,15 +1,53 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-/*
- * Statically imported, deliberately.
- *
- * 1.2.0 loaded this lazily to keep ~650 kB of InnerTube client out of the startup parse. It
- * shipped, and sign-in failed on every updated install with "cannot access 'X' before
- * initialization" — a temporal-dead-zone error out of the split chunk. Reverted in 1.2.1:
- * the startup win is real but it is not worth a client nobody can sign in to, and the split
- * needs to be reproduced and tested against a live session before it goes back.
- */
-import { ClientType, Innertube, Platform, Types, YTNodes } from "youtubei.js";
+import type { ClientType as ClientTypeEnum, Innertube as InnertubeInstance, Types, YTNodes as YTNodesType } from "youtubei.js";
+type Innertube = InnertubeInstance;
+
+let cachedYouTubeI: typeof import("youtubei.js") | null = null;
+let pendingYouTubeI: Promise<typeof import("youtubei.js")> | null = null;
+
+export function loadYouTubeI(): Promise<typeof import("youtubei.js")> {
+  if (cachedYouTubeI) return Promise.resolve(cachedYouTubeI);
+  if (!pendingYouTubeI) {
+    pendingYouTubeI = import("youtubei.js")
+      .then((mod) => {
+        cachedYouTubeI = mod;
+        return mod;
+      })
+      .catch((err) => {
+        pendingYouTubeI = null;
+        throw err;
+      });
+  }
+  return pendingYouTubeI;
+}
+
+const YTNodes = new Proxy({} as typeof YTNodesType, {
+  get(_target, prop) {
+    if (!cachedYouTubeI) {
+      throw new Error(`YTNodes.${String(prop)} accessed before youtubei.js loaded`);
+    }
+    return (cachedYouTubeI.YTNodes as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
+
+const ClientType = new Proxy({} as typeof ClientTypeEnum, {
+  get(_target, prop) {
+    if (!cachedYouTubeI) {
+      throw new Error(`ClientType.${String(prop)} accessed before youtubei.js loaded`);
+    }
+    return (cachedYouTubeI.ClientType as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
+
+const Innertube = new Proxy({} as typeof import("youtubei.js").Innertube, {
+  get(_target, prop) {
+    if (!cachedYouTubeI) {
+      throw new Error(`Innertube.${String(prop)} accessed before youtubei.js loaded`);
+    }
+    return (cachedYouTubeI.Innertube as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
 import { getAppSetting, removeAppSetting, setAppSetting } from "../../internal/appSettings";
 import { createSerialQueue } from "../../internal/asyncQueue";
 import { clearCache, getCachedJson, setCachedJson } from "../../internal/cache";
@@ -449,20 +487,22 @@ export class YouTubeMusicDataSource extends DataSource {
   private readonly lyricsRefreshPromises = new Map<string, Promise<Lyrics>>();
   private readonly artistSubscriptionOverrides = new Map<string, { subscribed: boolean; expiresAt: number }>();
 
-  constructor() {
-    super();
-    this.setupJavaScriptEvaluator();
-  }
+  private isEvaluatorInstalled = false;
 
-  private setupJavaScriptEvaluator() {
-    Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
-      logInternalDebug("YouTubeMusicDataSource.javascriptEvaluator", {
-        envKeys: Object.keys(env),
-        outputLength: data.output?.length ?? 0,
-      });
+  private async ensureYouTubeI(): Promise<typeof import("youtubei.js")> {
+    const module = await loadYouTubeI();
+    if (!this.isEvaluatorInstalled) {
+      module.Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
+        logInternalDebug("YouTubeMusicDataSource.javascriptEvaluator", {
+          envKeys: Object.keys(env),
+          outputLength: data.output?.length ?? 0,
+        });
 
-      return new Function(data.output)();
-    };
+        return new Function(data.output)();
+      };
+      this.isEvaluatorInstalled = true;
+    }
+    return module;
   }
 
   private getSessionOptions(retrievePlayer = true) {
@@ -520,6 +560,7 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private async createMusicClient(retrievePlayer = true): Promise<Innertube> {
+    await this.ensureYouTubeI();
     const client = await Innertube.create({
       ...this.getSessionOptions(retrievePlayer),
       client_type: ClientType.MUSIC,
@@ -543,10 +584,13 @@ export class YouTubeMusicDataSource extends DataSource {
       logInternalInfo("YouTubeMusicDataSource.getWebClient creating client");
       // No player needed: this client only enumerates accounts and resolves like endpoints,
       // neither of which touches stream URLs, and retrieving it downloads the player script.
-      this.webClientPromise = Innertube.create({
-        ...this.getSessionOptions(false),
-        client_type: ClientType.WEB,
-      });
+      this.webClientPromise = (async () => {
+        await this.ensureYouTubeI();
+        return Innertube.create({
+          ...this.getSessionOptions(false),
+          client_type: ClientType.WEB,
+        });
+      })();
     }
 
     return this.webClientPromise;
@@ -576,6 +620,7 @@ export class YouTubeMusicDataSource extends DataSource {
     if (!this.downloadClientPromise) {
       logInternalInfo("YouTubeMusicDataSource.getDownloadClient creating client");
       this.downloadClientPromise = (async () => {
+        await this.ensureYouTubeI();
         const bootstrap = await Innertube.create({
           fetch: tauriFetch,
           retrieve_player: false,

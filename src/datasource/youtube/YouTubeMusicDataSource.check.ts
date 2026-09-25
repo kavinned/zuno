@@ -6,7 +6,7 @@
  */
 export {};
 
-import { removeAccountOutcome } from "./YouTubeMusicDataSource";
+import { loadYouTubeI, removeAccountOutcome } from "./YouTubeMusicDataSource";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -37,3 +37,16 @@ check(
 );
 
 console.log("YouTubeMusicDataSource.removeAccountOutcome: ok");
+
+const p1 = loadYouTubeI();
+const p2 = loadYouTubeI();
+check(p1 === p2, "loadYouTubeI returns the same in-flight promise for concurrent callers");
+
+const module = await p1;
+check(typeof module.Innertube?.create === "function", "loaded Innertube client has create method");
+check(typeof module.Platform?.shim === "object", "loaded Platform has shim object");
+check(typeof module.YTNodes?.MusicShelf === "function", "loaded YTNodes exposes node classes");
+check(typeof module.ClientType?.MUSIC === "string", "loaded ClientType exposes client constants");
+
+console.log("YouTubeMusicDataSource.loadYouTubeI: ok");
+
