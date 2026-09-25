@@ -9,6 +9,7 @@ import {
   hasArtworkFailed,
   rememberResolvedArtworkUrl,
   resolveArtworkThroughProxy,
+  sniffImageMimeType,
 } from "../../internal/artworkCache";
 import { logInternalDebug } from "../../internal/logging";
 import { tauriFetch } from "../../datasource/youtube/tauriFetch";
@@ -191,16 +192,19 @@ export function TrackArtwork({
       // Embedded cover: read it out of the file's tags. Same cache, same object-URL budget,
       // same request sharing — only where the bytes come from differs.
       if (isLocalArtwork) {
-        const artwork = isLocalImage
-          ? await invoke<{ mimeType: string; dataBase64: string }>("read_image_file", {
+        if (isLocalImage) {
+          const artwork = await invoke<{ mimeType: string; dataBase64: string }>("read_image_file", {
             path: artworkUrl.slice(LOCAL_IMAGE_PREFIX.length),
-          })
-          : await invoke<{ mimeType: string; dataBase64: string } | null>("local_audio_artwork", {
-            path: artworkUrl.slice(LOCAL_ARTWORK_PREFIX.length),
           });
-        if (!artwork) throw new Error("This file carries no embedded artwork.");
-        const bytes = Uint8Array.from(atob(artwork.dataBase64), (char) => char.charCodeAt(0));
-        return new Blob([bytes], { type: artwork.mimeType });
+          const bytes = Uint8Array.from(atob(artwork.dataBase64), (char) => char.charCodeAt(0));
+          return new Blob([bytes], { type: artwork.mimeType });
+        }
+
+        const buffer = await invoke<ArrayBuffer>("local_audio_artwork", {
+          path: artworkUrl.slice(LOCAL_ARTWORK_PREFIX.length),
+        });
+        if (buffer.byteLength === 0) throw new Error("This file carries no embedded artwork.");
+        return new Blob([buffer], { type: sniffImageMimeType(new Uint8Array(buffer)) });
       }
 
       const response = await tauriFetch(proxyUrl, {

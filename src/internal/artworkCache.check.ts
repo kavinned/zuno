@@ -18,6 +18,7 @@ import {
   hasArtworkFailed,
   rememberResolvedArtworkUrl,
   resolveArtworkThroughProxy,
+  sniffImageMimeType,
 } from "./artworkCache";
 
 function check(condition: boolean, message: string): void {
@@ -170,5 +171,38 @@ equal(__artworkCacheForTest.blobBytes(), 0, "plain URLs weigh nothing");
 __artworkCacheForTest.reset();
 rememberResolvedArtworkUrl("flaky", "https://cdn/flaky.jpg");
 check(!hasArtworkFailed("flaky"), "a source that resolves is no longer marked failed");
+
+// --- image mime sniffing -------------------------------------------------------------------
+
+equal(
+  sniffImageMimeType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])),
+  "image/jpeg",
+  "identifies JPEG magic bytes",
+);
+equal(
+  sniffImageMimeType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  "image/png",
+  "identifies PNG magic bytes",
+);
+equal(
+  sniffImageMimeType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])),
+  "image/gif",
+  "identifies GIF magic bytes",
+);
+equal(
+  sniffImageMimeType(new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50])),
+  "image/webp",
+  "identifies WebP magic bytes",
+);
+equal(
+  sniffImageMimeType(new Uint8Array([0x42, 0x4d, 0, 0])),
+  "image/bmp",
+  "identifies BMP magic bytes",
+);
+equal(
+  sniffImageMimeType(new Uint8Array([0, 0, 0, 0])),
+  "image/jpeg",
+  "falls back to image/jpeg for unknown bytes",
+);
 
 console.log("artworkCache: ok");

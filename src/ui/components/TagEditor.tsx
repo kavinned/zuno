@@ -6,7 +6,7 @@ import { Loader } from "@/components/motion/loader";
 import { CloseIcon, MusicNoteIcon } from "@/ui/icons";
 import type { Track } from "../../datasource/types";
 import { logInternalError } from "../../internal/logging";
-import { forgetArtworkSource } from "../../internal/artworkCache";
+import { forgetArtworkSource, sniffImageMimeType } from "../../internal/artworkCache";
 import { LOCAL_ARTWORK_PREFIX } from "../../player/localPlaylists";
 
 export interface LocalAudioTags {
@@ -101,9 +101,12 @@ export function TagEditor({
       });
 
     // Separate from the tags read so a file with unreadable art still opens for text editing.
-    invoke<LocalArtwork | null>("local_audio_artwork", { path })
-      .then((existing) => {
-        if (!cancelled && existing) setCoverUrl(toDataUrl(existing));
+    invoke<ArrayBuffer>("local_audio_artwork", { path })
+      .then((buffer) => {
+        if (!cancelled && buffer.byteLength > 0) {
+          const blob = new Blob([buffer], { type: sniffImageMimeType(new Uint8Array(buffer)) });
+          setCoverUrl(URL.createObjectURL(blob));
+        }
       })
       .catch(() => undefined);
 
@@ -111,6 +114,14 @@ export function TagEditor({
       cancelled = true;
     };
   }, [track.localPath]);
+
+  useEffect(() => {
+    return () => {
+      if (coverUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(coverUrl);
+      }
+    };
+  }, [coverUrl]);
 
   // Focus the first field once the values are in, so the dialog opens ready to type.
   useEffect(() => {

@@ -727,18 +727,14 @@ fn read_image_file(path: String) -> Result<LocalArtwork, CommandError> {
     })
 }
 
-/// The first embedded picture, for the one file the UI is about to show.
-#[tauri::command]
-fn local_audio_artwork(path: String) -> Result<Option<LocalArtwork>, CommandError> {
-    use base64::Engine;
+pub(crate) fn extract_local_audio_artwork(path: &Path) -> Result<Option<(String, Vec<u8>)>, CommandError> {
     use lofty::file::TaggedFileExt;
 
-    let path = PathBuf::from(path);
-    if !path.is_file() || !is_local_audio_file(&path) {
+    if !path.is_file() || !is_local_audio_file(path) {
         return Err(cache_error("local audio file is unavailable."));
     }
 
-    let tagged = lofty::read_from_path(&path)
+    let tagged = lofty::read_from_path(path)
         .map_err(|error| cache_error(format!("tag read failed: {error}")))?;
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return Ok(None);
@@ -747,13 +743,24 @@ fn local_audio_artwork(path: String) -> Result<Option<LocalArtwork>, CommandErro
         return Ok(None);
     };
 
-    Ok(Some(LocalArtwork {
-        mime_type: picture
-            .mime_type()
-            .map(|mime| mime.to_string())
-            .unwrap_or_else(|| "image/jpeg".to_string()),
-        data_base64: base64::engine::general_purpose::STANDARD.encode(picture.data()),
-    }))
+    let mime_type = picture
+        .mime_type()
+        .map(|mime| mime.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+
+    Ok(Some((mime_type, picture.data().to_vec())))
+}
+
+/// The first embedded picture, for the one file the UI is about to show.
+/// Transferred as raw binary bytes over Tauri IPC to avoid base64 bloat and GC churn.
+#[tauri::command]
+fn local_audio_artwork(path: String) -> Result<tauri::ipc::Response, CommandError> {
+    let path = PathBuf::from(path);
+    let artwork = extract_local_audio_artwork(&path)?;
+    match artwork {
+        Some((_mime, bytes)) => Ok(tauri::ipc::Response::new(bytes)),
+        None => Ok(tauri::ipc::Response::new(Vec::new())),
+    }
 }
 
 fn scan_local_audio_path(path: &Path, files: &mut Vec<LocalAudioFile>) -> Result<(), CommandError> {
@@ -5447,7 +5454,7 @@ mod tests {
         MediaItem, AUDIO_MIN_CHUNK_BYTES, MEDIA_SERVER_MAX_ITEMS, OFFLINE_CHUNK_BYTES,
         load_superseded, LOAD_GENERATION, bytes_preview,
         YoutubeAccountStore, generate_slot_id, login_partition_directory_name,
-        decode_slot_id_bytes, LEGACY_ACCOUNT_SLOT_ID,
+        decode_slot_id_bytes, LEGACY_ACCOUNT_SLOT_ID, extract_local_audio_artwork,
     };
     use std::sync::atomic::Ordering;
     use super::audio::BufferReader;
@@ -6124,5 +6131,18 @@ mod tests {
         assert!(error_page.contains("text=\"{\\\"error\\\":\\\"forbidden\\\"}\""));
 
         assert_eq!(bytes_preview(&[]), "0 bytes, starts hex= text=\"\"");
+    }
+
+    #[test]
+    fn extract_local_audio_artwork_rejects_non_audio_and_missing_files() {
+        let temp = std::env::temp_dir().join("zuno_test_not_audio.txt");
+        let _ = std::fs::write(&temp, b"not audio");
+        let result = extract_local_audio_artwork(&temp);
+        let _ = std::fs::remove_file(&temp);
+        assert!(result.is_err(), "non-audio extension must fail extraction");
+
+        let missing = std::env::temp_dir().join("zuno_nonexistent_audio_file.mp3");
+        let result_missing = extract_local_audio_artwork(&missing);
+        assert!(result_missing.is_err(), "missing file must fail extraction");
     }
 }
