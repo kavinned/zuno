@@ -52,6 +52,7 @@ function loadRecentSearches(): string[] {
 
 interface SearchOverlayProps {
   isOpen: boolean;
+  initialQuery?: string;
   activeTabId: string;
   searchController: SearchController;
   albums: Album[];
@@ -68,6 +69,7 @@ interface SearchOverlayProps {
 
 export function SearchOverlay({
   isOpen,
+  initialQuery,
   activeTabId,
   searchController,
   albums,
@@ -87,7 +89,7 @@ export function SearchOverlay({
   const inputRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef(0);
   const modifiersRef = useRef({ primary: false, shift: false });
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery ?? "");
   const [searchResults, setSearchResults] = useState<SearchResults>({
     artists: [],
     tracks: [],
@@ -101,12 +103,18 @@ export function SearchOverlay({
 
   useEffect(() => {
     if (!isOpen) return;
-    setQuery("");
+    const initial = initialQuery ?? "";
+    setQuery(initial);
     setSearchResults({ artists: [], tracks: [], albums: [], playlists: [] });
     setSuggestions([]);
     setSelectedIndex(0);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }, [activeTabId, isOpen]);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      if (initial) {
+        inputRef.current?.select();
+      }
+    });
+  }, [activeTabId, isOpen, initialQuery]);
 
   useEffect(() => {
     if (!isOpen) return;

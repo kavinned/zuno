@@ -14,6 +14,7 @@ interface LayoutProps {
   onNavigateAlbum: (album: Album) => void;
   onNavigatePlaylist: (playlist: Playlist) => void;
   showSearchBar: boolean;
+  searchQuery?: string;
   onOpenSearch: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -46,6 +47,7 @@ export function Layout({
   onNavigateAlbum,
   onNavigatePlaylist,
   showSearchBar,
+  searchQuery,
   onOpenSearch,
   canGoBack,
   canGoForward,
@@ -286,6 +288,7 @@ export function Layout({
           {showSearchBar && (
             <div className="relative">
               <SearchBar
+                query={searchQuery}
                 onOpen={onOpenSearch}
                 canGoBack={canGoBack}
                 canGoForward={canGoForward}

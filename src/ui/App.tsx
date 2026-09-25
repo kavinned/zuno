@@ -2028,6 +2028,7 @@ useEffect(() => {
           onNavigateAlbum={handleNavigateAlbum}
           onNavigatePlaylist={handleNavigatePlaylist}
           showSearchBar={activeTab?.view !== "settings" && !playerUIState.isLyricsOpen}
+          searchQuery={activeTab?.view === "search" ? activeTab.searchQuery : undefined}
           onOpenSearch={() => setIsSearchOpen(true)}
           canGoBack={canNavigateBack}
           canGoForward={canNavigateForward}
@@ -2228,6 +2229,7 @@ useEffect(() => {
       </div>
       <SearchOverlay
         isOpen={isSearchOpen && activeTab?.view !== "settings"}
+        initialQuery={activeTab?.view === "search" ? activeTab.searchQuery : undefined}
         activeTabId={activeTabId}
         searchController={searchController}
         albums={libraryState.library?.albums ?? []}
