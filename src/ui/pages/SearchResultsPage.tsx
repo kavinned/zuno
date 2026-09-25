@@ -16,6 +16,7 @@ import { ArtistLinks } from "../components/ArtistLinks";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { usePlaylistContextMenu } from "../components/PlaylistContextMenu";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
+import { logInternalInfo } from "../../internal/logging";
 
 function normalizeSearchKey(value: string): string {
   return value
@@ -41,12 +42,12 @@ const SCOPES: Array<{
   /** The filter YouTube Music runs for a deep search of this scope. */
   category?: SearchCategory;
 }> = [
-  { value: "all", label: "All", field: "tracks" },
-  { value: "songs", label: "Songs", field: "tracks", category: "song" },
-  { value: "artists", label: "Artists", field: "artists", category: "artist" },
-  { value: "albums", label: "Albums", field: "albums", category: "album" },
-  { value: "playlists", label: "Playlists", field: "playlists", category: "playlist" },
-];
+    { value: "all", label: "All", field: "tracks" },
+    { value: "songs", label: "Songs", field: "tracks", category: "song" },
+    { value: "artists", label: "Artists", field: "artists", category: "artist" },
+    { value: "albums", label: "Albums", field: "albums", category: "album" },
+    { value: "playlists", label: "Playlists", field: "playlists", category: "playlist" },
+  ];
 
 const EMPTY_RESULTS: SearchResults = { artists: [], tracks: [], albums: [], playlists: [] };
 
@@ -66,8 +67,13 @@ function buildFlatItems(results: SearchResults, songsFirst: boolean): Selectable
 
 function SearchLoadingSpinner() {
   return (
-    <div className="grid place-items-center px-2 py-16 text-muted-foreground" role="status" aria-live="polite" aria-label="Searching">
-      <SpinnerSteps size={30} color="currentColor" />
+    <div
+      className="search-spinner flex h-full min-h-[50vh] w-full items-center justify-center text-primary"
+      role="status"
+      aria-live="polite"
+      aria-label="Searching"
+    >
+      <SpinnerSteps size={48} color="currentColor" />
     </div>
   );
 }
@@ -94,10 +100,16 @@ export function SearchResultsPage({
   const { openTrackMenu } = useTrackContextMenu();
   const { openPlaylistMenu, openAlbumMenu } = usePlaylistContextMenu();
   const [scope, setScope] = useState<SearchScope>("songs");
+  const [deepResults, setDeepResults] = useState<SearchResults | null>(null);
+  const [isDeepLoading, setIsDeepLoading] = useState(() => Boolean(query.trim() && scope !== "all"));
+  const [prevQuery, setPrevQuery] = useState(query);
 
-  // A scope from the previous query is meaningless against the next one, and silently hiding
-  // results the new search did find is the worst outcome.
-  useEffect(() => setScope("songs"), [query]);
+  if (prevQuery !== query) {
+    setPrevQuery(query);
+    setScope("songs");
+    setDeepResults(null);
+    setIsDeepLoading(Boolean(query.trim()));
+  }
 
   /*
    * A filtered search, run when a category tab is opened.
@@ -106,9 +118,6 @@ export function SearchResultsPage({
    * handful of rows rather than the answer to "show me the songs". Asking YouTube Music for
    * one category returns a proper list, which is the whole point of the tab.
    */
-  const [deepResults, setDeepResults] = useState<SearchResults | null>(null);
-  const [isDeepLoading, setIsDeepLoading] = useState(false);
-
   useEffect(() => {
     const category = SCOPES.find((item) => item.value === scope)?.category;
     if (!category || !query.trim()) {
@@ -309,7 +318,7 @@ export function SearchResultsPage({
   } as CSSProperties), []);
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex min-h-0 flex-1 flex-col gap-8">
       <header className="flex flex-col gap-3">
         <div>
           <p className="text-lg font-semibold text-foreground">Search results</p>
@@ -347,147 +356,150 @@ export function SearchResultsPage({
         )}
       </header>
 
-      {isLoading || (isDeepLoading && !hasResults) ? (
-        <SearchLoadingSpinner />
-      ) : !hasResults ? (
-        <p className="px-2 py-10 text-center text-sm text-muted-foreground">No results found.</p>
-      ) : (
-        <div className="flex flex-col gap-8">
-          {scopedResults.artists.length > 0 && (
-            <section className="flex flex-col gap-3" style={{ order: songsFirst ? 1 : 0 }}>
-              <h2>Artists</h2>
-              <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
-                {scopedResults.artists.map((artist) => {
-                  const index = flatItems.findIndex(
-                    (item) => item.kind === "artist" && item.artist.id === artist.id,
-                  );
-                  return (
-                    <button
-                      key={artist.id}
-                      type="button"
-                      data-selectable-index={index}
-                      className={`${"flex flex-col items-center gap-2 rounded-xl p-3 transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"} ${"animate-in fade-in"} ${selected(index)}`}
-                      style={enterStyle(index)}
-                      onClick={() => onOpenArtist(artist)}
-                      onMouseEnter={() => handleMouseEnter(index)}
-                    >
-                      <TrackArtwork
-                        className="size-24 rounded-full object-cover"
-                        size={96}
-                        artworkUrl={artist.artworkUrl}
-                        iconSize={42}
-                        variant="artist"
-                      />
-                      <strong>{artist.name}</strong>
-                      <span>{artist.subscriberCount || "Artist"}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
+      {(() => {
+        const isSearching = isLoading || isDeepLoading;
+        const showSpinner = isSearching && !hasResults;
+        logInternalInfo("SearchResultsPage.render", { query, isLoading, isDeepLoading, showSpinner, hasResults });
+        if (showSpinner) return <SearchLoadingSpinner />;
+        if (!hasResults) return <p className="px-2 py-10 text-center text-sm text-muted-foreground">No results found.</p>;
+        return (
+          <div className="flex flex-col gap-8">
+            {scopedResults.artists.length > 0 && (
+              <section className="flex flex-col gap-3" style={{ order: songsFirst ? 1 : 0 }}>
+                <h2>Artists</h2>
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
+                  {scopedResults.artists.map((artist) => {
+                    const index = flatItems.findIndex(
+                      (item) => item.kind === "artist" && item.artist.id === artist.id,
+                    );
+                    return (
+                      <button
+                        key={artist.id}
+                        type="button"
+                        data-selectable-index={index}
+                        className={`${"flex flex-col items-center gap-2 rounded-xl p-3 transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"} ${"animate-in fade-in"} ${selected(index)}`}
+                        style={enterStyle(index)}
+                        onClick={() => onOpenArtist(artist)}
+                        onMouseEnter={() => handleMouseEnter(index)}
+                      >
+                        <TrackArtwork
+                          className="size-24 rounded-full object-cover"
+                          size={96}
+                          artworkUrl={artist.artworkUrl}
+                          iconSize={42}
+                          variant="artist"
+                        />
+                        <strong>{artist.name}</strong>
+                        <span>{artist.subscriberCount || "Artist"}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
-          {scopedResults.tracks.length > 0 && (
-            <section className="flex flex-col gap-3" style={{ order: songsFirst ? 0 : 1 }}>
-              <h2>Songs</h2>
-              <div className="flex flex-col gap-0.5" data-onboarding="search-results">
-                {scopedResults.tracks.map((track, displayIndex) => {
-                  const index = flatItems.findIndex(
-                    (item) => item.kind === "track" && item.track.id === track.id,
-                  );
-                  return (
-                    <button
-                      key={track.id}
-                      type="button"
-                      data-selectable-index={index}
-                      className={`${"group/row flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"} ${"animate-in fade-in"} ${selected(index)}`}
-                      style={enterStyle(index)}
-                      onContextMenu={(event) => openTrackMenu(event, track)}
-                      onClick={() => playTrack(track)}
-                      onMouseEnter={() => handleMouseEnter(index)}
-                    >
-                      <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{displayIndex + 1}</span>
-                      <TrackArtwork
-                        className="size-11 shrink-0 rounded-md object-cover"
-                        size={44}
-                        artworkUrl={track.artworkUrl}
-                        iconSize={24}
-                      />
-                      <span className="flex min-w-0 flex-1 flex-col [&_span]:truncate [&_span]:text-xs [&_span]:text-muted-foreground [&_strong]:truncate [&_strong]:text-sm [&_strong]:font-medium">
-                        <strong>{track.title}</strong>
-                        <ArtistLinks artists={track.artists} fallback={track.artist} />
-                      </span>
-                      <PlayActiveIcon size={18} />
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
+            {scopedResults.tracks.length > 0 && (
+              <section className="flex flex-col gap-3" style={{ order: songsFirst ? 0 : 1 }}>
+                <h2>Songs</h2>
+                <div className="flex flex-col gap-0.5" data-onboarding="search-results">
+                  {scopedResults.tracks.map((track, displayIndex) => {
+                    const index = flatItems.findIndex(
+                      (item) => item.kind === "track" && item.track.id === track.id,
+                    );
+                    return (
+                      <button
+                        key={track.id}
+                        type="button"
+                        data-selectable-index={index}
+                        className={`${"group/row flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"} ${"animate-in fade-in"} ${selected(index)}`}
+                        style={enterStyle(index)}
+                        onContextMenu={(event) => openTrackMenu(event, track)}
+                        onClick={() => playTrack(track)}
+                        onMouseEnter={() => handleMouseEnter(index)}
+                      >
+                        <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{displayIndex + 1}</span>
+                        <TrackArtwork
+                          className="size-11 shrink-0 rounded-md object-cover"
+                          size={44}
+                          artworkUrl={track.artworkUrl}
+                          iconSize={24}
+                        />
+                        <span className="flex min-w-0 flex-1 flex-col [&_span]:truncate [&_span]:text-xs [&_span]:text-muted-foreground [&_strong]:truncate [&_strong]:text-sm [&_strong]:font-medium">
+                          <strong>{track.title}</strong>
+                          <ArtistLinks artists={track.artists} fallback={track.artist} />
+                        </span>
+                        <PlayActiveIcon size={18} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
-          {scopedResults.albums.length > 0 && (
-            <section className="flex flex-col gap-3" style={{ order: 2 }}>
-              <h2>Albums</h2>
-              <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
-                {scopedResults.albums.map((album) => {
-                  const index = flatItems.findIndex(
-                    (item) => item.kind === "album" && item.album.id === album.id,
-                  );
-                  return (
-                    <div
-                      key={album.id}
-                      data-selectable-index={index}
-                      className={`${"animate-in fade-in"} ${selectedAlbumCard(index)}`}
-                      style={enterStyle(index)}
-                      onMouseEnter={() => handleMouseEnter(index)}
-                    >
-                      <AlbumCard
-                        artworkUrl={album.artworkUrl}
-                        title={album.title}
-                        subtitleContent={(
-                          <ArtistLinks artists={album.artists} fallback={album.artist} />
-                        )}
-                        onClick={() => onOpenAlbum(album)}
-                        onContextMenu={(event) => openAlbumMenu(event, album)}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
+            {scopedResults.albums.length > 0 && (
+              <section className="flex flex-col gap-3" style={{ order: 2 }}>
+                <h2>Albums</h2>
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
+                  {scopedResults.albums.map((album) => {
+                    const index = flatItems.findIndex(
+                      (item) => item.kind === "album" && item.album.id === album.id,
+                    );
+                    return (
+                      <div
+                        key={album.id}
+                        data-selectable-index={index}
+                        className={`${"animate-in fade-in"} ${selectedAlbumCard(index)}`}
+                        style={enterStyle(index)}
+                        onMouseEnter={() => handleMouseEnter(index)}
+                      >
+                        <AlbumCard
+                          artworkUrl={album.artworkUrl}
+                          title={album.title}
+                          subtitleContent={(
+                            <ArtistLinks artists={album.artists} fallback={album.artist} />
+                          )}
+                          onClick={() => onOpenAlbum(album)}
+                          onContextMenu={(event) => openAlbumMenu(event, album)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
-          {scopedResults.playlists.length > 0 && (
-            <section className="flex flex-col gap-3" style={{ order: 3 }}>
-              <h2>Playlists</h2>
-              <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
-                {scopedResults.playlists.map((playlist) => {
-                  const index = flatItems.findIndex(
-                    (item) => item.kind === "playlist" && item.playlist.id === playlist.id,
-                  );
-                  return (
-                    <div
-                      key={playlist.id}
-                      data-selectable-index={index}
-                      className={`${"animate-in fade-in"} ${selectedAlbumCard(index)}`}
-                      style={enterStyle(index)}
-                      onMouseEnter={() => handleMouseEnter(index)}
-                    >
-                      <AlbumCard
-                        artworkUrl={playlist.artworkUrl}
-                        title={playlist.title}
-                        subtitle={playlist.owner}
-                        onClick={() => onOpenPlaylist(playlist)}
-                        onContextMenu={(event) => openPlaylistMenu(event, playlist)}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-        </div>
-      )}
+            {scopedResults.playlists.length > 0 && (
+              <section className="flex flex-col gap-3" style={{ order: 3 }}>
+                <h2>Playlists</h2>
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr))]">
+                  {scopedResults.playlists.map((playlist) => {
+                    const index = flatItems.findIndex(
+                      (item) => item.kind === "playlist" && item.playlist.id === playlist.id,
+                    );
+                    return (
+                      <div
+                        key={playlist.id}
+                        data-selectable-index={index}
+                        className={`${"animate-in fade-in"} ${selectedAlbumCard(index)}`}
+                        style={enterStyle(index)}
+                        onMouseEnter={() => handleMouseEnter(index)}
+                      >
+                        <AlbumCard
+                          artworkUrl={playlist.artworkUrl}
+                          title={playlist.title}
+                          subtitle={playlist.owner}
+                          onClick={() => onOpenPlaylist(playlist)}
+                          onContextMenu={(event) => openPlaylistMenu(event, playlist)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </div>
+        )
+      })()}
     </div>
   );
 }
