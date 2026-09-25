@@ -49,6 +49,7 @@ export interface OfflineState {
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
+const progressListeners = new Set<Listener>();
 let state: OfflineState = {
   entries: {},
   progress: null,
@@ -63,6 +64,10 @@ let pumping = false;
 
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+function emitProgress(): void {
+  for (const listener of progressListeners) listener();
 }
 
 function asManifest(parsed: unknown): Record<string, OfflineEntry> | null {
@@ -106,6 +111,9 @@ function writeManifest(entries: Record<string, OfflineEntry>): void {
 function setState(next: Partial<OfflineState>): void {
   state = { ...state, ...next };
   emit();
+  if (next.progress !== undefined || next.downloadingId !== undefined) {
+    emitProgress();
+  }
 }
 
 function commitEntries(entries: Record<string, OfflineEntry>): void {
@@ -195,7 +203,8 @@ export async function hydrateOfflineStore(): Promise<void> {
 export function startOfflineProgressFeed(): void {
   void listen<{ trackId: string; percent: number }>("offline-download-progress", (event) => {
     if (event.payload.trackId !== state.downloadingId) return;
-    setState({ progress: event.payload.percent });
+    state.progress = event.payload.percent;
+    emitProgress();
   });
 }
 
@@ -382,10 +391,55 @@ function subscribe(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
+function subscribeProgress(listener: Listener): () => void {
+  progressListeners.add(listener);
+  return () => progressListeners.delete(listener);
+}
+
 export function getOfflineState(): OfflineState {
   return state;
 }
 
 export function useOfflineState(): OfflineState {
   return useSyncExternalStore(subscribe, getOfflineState, getOfflineState);
+}
+
+/**
+ * Live download progress for a specific track.
+ *
+ * Returns null if the track is not the one currently downloading or if size is unknown.
+ * Only triggers re-renders for the track that is actually downloading.
+ */
+export function useTrackDownloadProgress(trackId: string | undefined): number | null {
+  return useSyncExternalStore(
+    subscribeProgress,
+    () => (trackId && state.downloadingId === trackId ? state.progress : null),
+    () => (trackId && state.downloadingId === trackId ? state.progress : null),
+  );
+}
+
+/**
+ * Live download progress for whatever track is currently downloading.
+ */
+export function useOfflineProgress(): number | null {
+  return useSyncExternalStore(
+    subscribeProgress,
+    () => state.progress,
+    () => state.progress,
+  );
+}
+
+/**
+ * Offline status for a single track.
+ *
+ * Subscribing to this hook only re-renders when this specific track's status changes
+ * (e.g. absent -> queued -> downloading -> ready), avoiding re-rendering when other
+ * tracks in the playlist transition or when download progress ticks arrive.
+ */
+export function useTrackOfflineStatus(trackId: string): OfflineStatus {
+  return useSyncExternalStore(
+    subscribe,
+    () => getOfflineStatus(trackId),
+    () => getOfflineStatus(trackId),
+  );
 }
