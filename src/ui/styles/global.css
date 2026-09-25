@@ -387,8 +387,7 @@ html[data-fx-off~="lyrics-drift"] .lyrics-drift {
 }
 
 html[data-fx-off~="visualizer"] .music,
-html[data-fx-off~="visualizer"] .audio-loader,
-html[data-fx-off~="visualizer"] .spinner-steps {
+html[data-fx-off~="visualizer"] .audio-loader {
   display: none !important;
 }
 
