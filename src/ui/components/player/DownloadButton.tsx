@@ -8,6 +8,7 @@ import {
   queueDownload,
   removeDownload,
   useOfflineState,
+  useTrackDownloadProgress,
 } from "../../../player/offlineStore";
 
 const RING_RADIUS = 8;
@@ -25,6 +26,7 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 export function DownloadButton() {
   const track = usePlayerSelector((state) => state.currentTrack);
   const offline = useOfflineState();
+  const trackProgress = useTrackDownloadProgress(track?.id);
 
   // Local files are already on disk; a download control for them is a button that lies.
   if (!track || track.source === "local") return null;
@@ -33,7 +35,7 @@ export function DownloadButton() {
   const isDownloading = offline.downloadingId === track.id;
   const queuePosition = offline.queued.indexOf(track.id);
   const isQueued = queuePosition >= 0;
-  const progress = isDownloading ? offline.progress : null;
+  const progress = isDownloading ? trackProgress : null;
 
   const label = isReady
     ? "Remove download"

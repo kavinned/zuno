@@ -4,7 +4,7 @@ import { Button } from "@/components/motion/button";
 import { Tooltip } from "@/components/motion/tooltip";
 import { CheckIcon, CloseIcon, DownloadIcon } from "@/ui/icons";
 import type { Track } from "../../datasource/types";
-import { cancelDownload, useOfflineState } from "../../player/offlineStore";
+import { cancelDownload, useOfflineProgress, useOfflineState } from "../../player/offlineStore";
 import { FloatingPanel } from "./FloatingPanel";
 import { TrackArtwork } from "./TrackArtwork";
 
@@ -64,6 +64,24 @@ function DownloadRow({
         </button>
       )}
     </div>
+  );
+}
+
+function ActiveDownloadRow({
+  track,
+  onCancel,
+}: {
+  track: Track;
+  onCancel: () => void;
+}) {
+  const progress = useOfflineProgress();
+  return (
+    <DownloadRow
+      track={track}
+      status={progress === null ? "Downloading…" : `Downloading · ${progress}%`}
+      progress={progress}
+      onCancel={onCancel}
+    />
   );
 }
 
@@ -140,10 +158,8 @@ export function DownloadsPanel({ onOpenDownloads }: { onOpenDownloads?: () => vo
       ) : (
         <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto">
           {downloadingTrack && (
-            <DownloadRow
+            <ActiveDownloadRow
               track={downloadingTrack}
-              status={offline.progress === null ? "Downloading…" : `Downloading · ${offline.progress}%`}
-              progress={offline.progress}
               onCancel={() => cancelDownload(downloadingTrack.id)}
             />
           )}
