@@ -217,6 +217,7 @@ import {
   getOfflineMaxBytes,
   removeAllDownloads,
   setOfflineMaxBytes,
+  useOfflineProgress,
   useOfflineState,
 } from "../../player/offlineStore";
 
@@ -250,6 +251,11 @@ function formatSessionAge(confirmedAt: number | null): string {
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+}
+
+function SettingsDownloadProgress() {
+  const progress = useOfflineProgress();
+  return <>{progress !== null ? ` · downloading ${progress}%` : " · downloading"}</>;
 }
 
 /**
@@ -1637,11 +1643,7 @@ export function SettingsPage({
                   {offlineState.usedBytes > 0 || Object.keys(offlineState.entries).length > 0
                     ? `${Object.keys(offlineState.entries).length} songs · ${formatBytes(offlineState.usedBytes)}`
                     : "No songs downloaded yet."}
-                  {offlineState.downloadingId
-                    ? offlineState.progress !== null
-                      ? ` · downloading ${offlineState.progress}%`
-                      : " · downloading"
-                    : ""}
+                  {offlineState.downloadingId ? <SettingsDownloadProgress /> : ""}
                   {offlineState.queued.length > 0
                     ? ` · ${offlineState.queued.length} queued`
                     : ""}

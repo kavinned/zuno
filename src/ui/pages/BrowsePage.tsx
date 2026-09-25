@@ -14,7 +14,12 @@ import type {
 import type { LibraryController } from "../../player/LibraryController";
 import type { PlayerControllerActions } from "../../player/playerStore";
 import { logInternalError } from "../../internal/logging";
-import { removeAllDownloads, useOfflineState } from "../../player/offlineStore";
+import {
+  removeAllDownloads,
+  useOfflineProgress,
+  useOfflineState,
+  useTrackDownloadProgress,
+} from "../../player/offlineStore";
 import { BrowseShelves } from "../components/BrowseShelves";
 import { TrackRow } from "../components/TrackRow";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
@@ -39,6 +44,24 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 ** 2) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function DownloadProgressSummary() {
+  const progress = useOfflineProgress();
+  return <>{progress !== null ? ` · downloading ${progress}%` : " · downloading"}</>;
+}
+
+function InFlightTrailing({ trackId, isActive }: { trackId: string; isActive: boolean }) {
+  const progress = useTrackDownloadProgress(trackId);
+  return (
+    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+      {isActive
+        ? progress !== null
+          ? `${progress}%`
+          : "Downloading"
+        : "Queued"}
+    </span>
+  );
 }
 
 /**
@@ -190,11 +213,7 @@ export function BrowsePage({
                 {downloads.length} {downloads.length === 1 ? "song" : "songs"} ·{" "}
                 {formatSize(offline.usedBytes)}
                 {inFlight.length > 0 ? ` · ${inFlight.length} in progress` : ""}
-                {offline.downloadingId
-                  ? offline.progress !== null
-                    ? ` · downloading ${offline.progress}%`
-                    : " · downloading"
-                  : ""}
+                {offline.downloadingId ? <DownloadProgressSummary /> : ""}
 
               </p>
               <button
@@ -237,15 +256,7 @@ export function BrowsePage({
 
                       showRating
                       className="opacity-70"
-                      trailing={
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                          {isActive
-                            ? offline.progress !== null
-                              ? `${offline.progress}%`
-                              : "Downloading"
-                            : "Queued"}
-                        </span>
-                      }
+                      trailing={<InFlightTrailing trackId={track.id} isActive={isActive} />}
                     />
                   );
                 })}

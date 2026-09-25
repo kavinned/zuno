@@ -12,10 +12,10 @@ import { Tooltip } from "@/components/motion/tooltip";
 import { CheckActiveIcon, CheckIcon, DislikeActiveIcon, DislikeIcon, DownloadIcon, HeartActiveIcon, HeartIcon, ListIcon, PlaylistAddIcon, PlayActiveIcon } from "@/ui/icons";
 import { Loader, MusicVisualizer } from "@/components/motion/loader";
 import {
-  getOfflineStatus,
   queueDownload,
   removeDownload,
-  useOfflineState,
+  useTrackDownloadProgress,
+  useTrackOfflineStatus,
 } from "../../player/offlineStore";
 import type { Track, TrackRating } from "../../datasource/types";
 import { libraryController, useLibraryState } from "../../player/playerStore";
@@ -82,10 +82,12 @@ interface TrackRowProps extends PassthroughButtonProps {
  * state you need to see without hovering, the same reasoning as the queue's stop marker.
  */
 function DownloadAction({ track }: { track: Track }) {
-  // Subscribing here rather than in TrackRow keeps download churn from re-rendering the
-  // whole row, which matters on a 500-row playlist while a queue is draining.
-  const offline = useOfflineState();
-  const status = getOfflineStatus(track.id);
+  // Subscribing to track-targeted status and progress hooks ensures:
+  // 1. Idle tracks do not re-render on progress ticks (progress snapshot is null).
+  // 2. Only the track currently downloading re-renders as percentage updates.
+  // 3. Status changes (queued -> downloading -> ready) only re-render the transitioning tracks.
+  const status = useTrackOfflineStatus(track.id);
+  const progress = useTrackDownloadProgress(track.id);
   const isDownloading = status === "downloading";
 
   if (track.source === "local") return null;
@@ -133,7 +135,7 @@ function DownloadAction({ track }: { track: Track }) {
           <Loader
             variant="percent"
             size={18}
-            value={offline.progress ?? undefined}
+            value={progress ?? undefined}
             label={`Downloading ${track.title}`}
           />
         ) : status === "queued" ? (
