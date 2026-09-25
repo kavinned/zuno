@@ -31,6 +31,7 @@ import { useTrackContextMenu } from "../components/TrackContextMenu";
 import { usePlaylistContextMenu } from "../components/PlaylistContextMenu";
 import { useNowPlaying } from "../hooks/useNowPlaying";
 import { useTrackSelection } from "../hooks/useTrackSelection";
+import { useChunkedList } from "../hooks/useChunkedList";
 import { isLikedSongsId, likedSongsCover } from "../likedSongsArtwork";
 import { useHiddenPlaylistIds } from "../settings/hiddenPlaylists";
 
@@ -271,6 +272,13 @@ export function LibraryPage({
   );
 
   const selection = useTrackSelection(songs);
+  const {
+    visibleItems: chunkedSongs,
+    hasMoreChunks: hasMoreSongChunks,
+    sentinelRef: songSentinelRef,
+  } = useChunkedList(songs, {
+    resetKey: `${tab}:${normalizedQuery}:${activeSort}`,
+  });
   const tabsId = useId();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -437,7 +445,7 @@ export function LibraryPage({
               <span className="hidden min-w-0 flex-1 basis-0 lg:block">Album</span>
             </div>
             <div className="flex flex-col gap-0.5">
-            {songs.map((track, index) => (
+            {chunkedSongs.map((track, index) => (
               <TrackRow
                 key={track.id}
                 track={track}
@@ -457,6 +465,9 @@ export function LibraryPage({
                 showRating
               />
             ))}
+            {hasMoreSongChunks && (
+              <div ref={songSentinelRef} className="h-6" aria-hidden="true" />
+            )}
             </div>
           </div>
         )
