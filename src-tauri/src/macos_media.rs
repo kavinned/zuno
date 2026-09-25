@@ -145,10 +145,8 @@ async fn load_artwork_bytes(url: &str) -> Option<Vec<u8>> {
 
     // Embedded cover of a local file. The tag read blocks, but once per track, not per update.
     if let Some(path) = url.strip_prefix("local-art:") {
-        let artwork = crate::local_audio_artwork(path.to_string()).ok()??;
-        return base64::engine::general_purpose::STANDARD
-            .decode(artwork.data_base64)
-            .ok();
+        let (_, bytes) = crate::extract_local_audio_artwork(std::path::Path::new(path)).ok()??;
+        return Some(bytes);
     }
 
     let response = reqwest::get(url).await.ok()?;
