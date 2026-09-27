@@ -172,9 +172,21 @@ class ActivePlayerController implements PlayerControllerActions {
     tabManager.getActivePlayer().setStopAfterQueueIndex(index);
   generateQueueAfter = (index: number) =>
     tabManager.getActivePlayer().generateQueueAfter(index);
+  getState = () => tabManager.getActiveState();
 }
 
-export const playerController: PlayerControllerActions = new ActivePlayerController();
+export const playerController: PlayerControllerActions & { getState: () => PlayerState } =
+  new ActivePlayerController();
+
+if (typeof window !== "undefined") {
+  (window as unknown as { zuno?: unknown }).zuno = {
+    libraryController,
+    playerController,
+    searchController,
+    dataSource,
+    tabManager,
+  };
+}
 
 /*
  * Hoisted, not inline.
