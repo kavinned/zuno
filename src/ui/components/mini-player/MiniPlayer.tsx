@@ -1088,7 +1088,7 @@ export default function MiniPlayer() {
                   <PauseActiveIcon size={15} />
                 </span>
                 <span className={cn("absolute transition-opacity duration-150", isLoading ? "opacity-100" : "opacity-0")}>
-                  <SpinnerSteps size={13} color="currentColor" />
+                  <SpinnerSteps size={13} color="#ffffff" className="text-white" />
                 </span>
               </span>
             </button>

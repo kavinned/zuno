@@ -209,7 +209,26 @@ export function MediaHeader({
                 className="flex size-13 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:scale-[1.03] active:scale-95 disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 {isLoading ? (
-                  <SpinnerSteps size={22} color="currentColor" />
+                  <svg
+                    className="size-7 animate-spin text-white"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-30"
+                      cx="12"
+                      cy="12"
+                      r="9.5"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                    />
+                    <path
+                      className="opacity-100"
+                      fill="currentColor"
+                      d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5h-2.5A7 7 0 0 0 12 5z"
+                    />
+                  </svg>
                 ) : isPlaying ? (
                   <PauseActiveIcon size={22} aria-hidden="true" />
                 ) : (
