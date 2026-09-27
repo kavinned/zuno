@@ -509,6 +509,17 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
     ].some((value) => value?.toLocaleLowerCase().includes(query)));
   }, [playlistSearchQuery, sortedTracks]);
 
+  const isSearching = Boolean(playlistSearchQuery.trim())
+    && visibleTracks.length === 0
+    && (hasMoreTracks || isLoadingMore || isCollectingAll)
+    && !loadMoreError;
+
+  useEffect(() => {
+    if (!playlistSearchQuery.trim() || visibleTracks.length > 0 || !hasMoreTracks || loadMoreError) return;
+    if (isLoading || isLoadingMore || isCollectingAll) return;
+    void loadMoreTracks();
+  }, [hasMoreTracks, isCollectingAll, isLoading, isLoadingMore, loadMoreError, loadMoreTracks, playlistSearchQuery, visibleTracks.length]);
+
   /*
    * Drag to reorder.
    *
@@ -878,8 +889,12 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
           </div>
           {isLoading ? (
             <TrackListSkeleton label="Loading songs" />
+          ) : isSearching ? (
+            <PlaylistLoadingSpinner label="Searching playlist" />
           ) : visibleTracks.length === 0 && playlistSearchQuery.trim() ? (
-            <p className="px-2 py-10 text-center text-sm text-muted-foreground">No songs match this search.</p>
+            <p className="px-2 py-10 text-center text-sm text-muted-foreground">
+              {loadMoreError ?? "No songs match this search."}
+            </p>
           ) : (
           <div className="flex flex-col gap-0.5">
             {visibleTracks.map((track, index) => {
@@ -945,9 +960,9 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
           )}
           {!isLoading && (
             <div ref={loadMoreRef} className="px-2 py-4 text-center text-sm text-muted-foreground" aria-live="polite">
-              {isLoadingMore ? (
+              {isLoadingMore && !isSearching ? (
                 <PlaylistLoadingSpinner label="Loading more songs" />
-              ) : loadMoreError ? (
+              ) : loadMoreError && visibleTracks.length > 0 ? (
                 loadMoreError
               ) : hasMoreTracks ? (
                 ""
