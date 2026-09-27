@@ -90,4 +90,12 @@ forgetTrackInPlaylist(track("vl-track"), playlist("PL100"));
 equal(isTrackKnownInPlaylist(track("vl-track"), playlist("PL100")), false);
 equal(isTrackKnownInPlaylist(track("vl-track"), playlist("VLPL100")), false);
 
+// Local playlist folder matching
+const localTrack = (localPath: string) => ({ id: `local:${localPath}`, source: "local", localPath, title: "song" }) as never;
+const localPlaylist = (localPaths: string[]) => ({ id: "local-playlist:lp1", kind: "local", title: "Local", localPaths }) as never;
+
+equal(isTrackKnownInPlaylist(localTrack("C:/Music/Rock/song1.mp3"), localPlaylist(["C:/Music/Rock"])), true);
+equal(isTrackKnownInPlaylist(localTrack("C:\\Music\\Rock\\song2.mp3"), localPlaylist(["C:/Music/Rock"])), true);
+equal(isTrackKnownInPlaylist(localTrack("C:/Music/Pop/song3.mp3"), localPlaylist(["C:/Music/Rock"])), false);
+
 console.log("playlistMembership: ok");

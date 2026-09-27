@@ -96,7 +96,14 @@ export function isTrackKnownInPlaylist(track: Track, playlist: Playlist): boolea
   if (isLocalPlaylist(playlist)) {
     if (!track.localPath) return false;
     const paths = playlist.localPaths ?? getLocalPlaylist(playlist.id)?.paths ?? [];
-    return paths.includes(track.localPath);
+    const normalizedTrackPath = track.localPath.replace(/\\/g, "/").toLowerCase();
+    return paths.some((p) => {
+      const normalizedFolder = p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+      return (
+        normalizedTrackPath === normalizedFolder ||
+        normalizedTrackPath.startsWith(normalizedFolder + "/")
+      );
+    });
   }
   if (track.source === "local") {
     return getLocalTracksForPlaylist(playlist).some((item) => item.localPath === track.localPath);

@@ -4234,7 +4234,7 @@ export class YouTubeMusicDataSource extends DataSource {
   async getPlaylistIdsContainingTrack(track: Track): Promise<string[]> {
     if (!this.musicCookie || track.source === "local") return [];
 
-    const client = await this.getMusicClient();
+    const client = await this.getWebClient();
     const response = await client.actions.execute("/playlist/get_add_to_playlist", {
       videoIds: [track.id],
       excludeWatchLater: true,
@@ -4246,16 +4246,22 @@ export class YouTubeMusicDataSource extends DataSource {
       if (!value || typeof value !== "object" || seen.has(value)) return;
       seen.add(value);
 
-      const option = (value as { playlistAddToOptionRenderer?: unknown }).playlistAddToOptionRenderer;
-      if (option && typeof option === "object") {
-        const { playlistId, containsSelectedVideos } = option as {
-          playlistId?: string;
-          containsSelectedVideos?: string;
-        };
-        // "ALL" for a single song means it is in there; "SOME" only arises for a selection.
-        if (playlistId && containsSelectedVideos && containsSelectedVideos !== "NONE") {
-          ids.push(this.normalizePlaylistId(playlistId));
-        }
+      const rawOption = (value as { playlistAddToOptionRenderer?: unknown }).playlistAddToOptionRenderer;
+      const target = (rawOption && typeof rawOption === "object") ? rawOption : value;
+
+      const raw = target as {
+        playlistId?: string;
+        playlist_id?: string;
+        containsSelectedVideos?: string;
+        contains_selected_videos?: string;
+      };
+
+      const playlistId = raw.playlistId ?? raw.playlist_id;
+      const contains = raw.containsSelectedVideos ?? raw.contains_selected_videos;
+
+      // "ALL" for a single song means it is in there; "SOME" only arises for a selection.
+      if (playlistId && contains && contains !== "NONE") {
+        ids.push(this.normalizePlaylistId(playlistId));
       }
 
       for (const child of Object.values(value)) visit(child);

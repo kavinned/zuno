@@ -39,11 +39,6 @@ const getNoPlaylists = () => NO_PLAYLISTS;
 
 const NO_MEMBERSHIP: ReadonlySet<string> = new Set();
 
-/** Playlist ids travel with and without a `VL` browse prefix; membership compares bare ids. */
-function barePlaylistId(playlistId: string): string {
-  return playlistId.replace(/^VL/, "");
-}
-
 const PICKER_ROW =
   "flex w-full items-center gap-2.5 rounded-lg p-1.5 transition-colors hover:bg-card disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
 import {
@@ -51,7 +46,11 @@ import {
   isLocalPlaylist,
   subscribeToLocalPlaylists,
 } from "../../player/localPlaylists";
-import { isTrackKnownInPlaylist } from "../../player/playlistMembership";
+import {
+  barePlaylistId,
+  isTrackKnownInPlaylist,
+  rememberTrackInPlaylists,
+} from "../../player/playlistMembership";
 import { ArtistLinks } from "./ArtistLinks";
 import { TagEditor } from "./TagEditor";
 
@@ -164,7 +163,12 @@ export function TrackContextMenuProvider({
     let active = true;
     void libraryController.getPlaylistIdsContainingTrack(track)
       .then((ids) => {
-        if (active) setRemoteMembership(new Set(ids.map(barePlaylistId)));
+        if (active) {
+          setRemoteMembership(new Set(ids.map(barePlaylistId)));
+          if (ids.length > 0) {
+            rememberTrackInPlaylists(track, ids);
+          }
+        }
       })
       .catch((error: unknown) => {
         logInternalError("TrackContextMenu.playlistMembership failed", error);
