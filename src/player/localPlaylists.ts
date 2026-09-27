@@ -464,7 +464,8 @@ function localTrackId(path: string): string {
   return `local:${btoa(unescape(encodeURIComponent(path)))}`;
 }
 
-export function isLocalPlaylist(playlist: Playlist): boolean {
+export function isLocalPlaylist(playlist?: Playlist | null): boolean {
+  if (!playlist || typeof playlist !== "object" || !playlist.id) return false;
   return playlist.kind === "local" || playlist.id.startsWith(LOCAL_PLAYLIST_PREFIX);
 }
 
