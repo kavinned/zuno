@@ -9,6 +9,7 @@ import { markPlaylistPlayed } from "../../player/recentPlaylists";
 import { shuffleTracks } from "../../player/shuffleTracks";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
 import { addLocalPlaylistPath, isLocalPlaylist } from "../../player/localPlaylists";
+import { rememberTrackInPlaylist } from "../../player/playlistMembership";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Tooltip } from "@/components/motion/tooltip";
 import { logInternalError } from "../../internal/logging";
@@ -624,6 +625,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   if (!playlist) return null;
 
   const playPlaylistTrack = async (track: Track) => {
+    rememberTrackInPlaylist(track, playlist);
     const started = await playerController.playTrackById(track.id, visibleTracks);
     if (started) markPlaylistPlayed(playlist.id);
   };
@@ -653,6 +655,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
     const firstTrack = tracks[0];
     if (!firstTrack) return;
 
+    rememberTrackInPlaylist(firstTrack, playlist);
     const started = await playerController.playTrackById(firstTrack.id, tracks);
     if (started) markPlaylistPlayed(playlist.id);
   };
@@ -663,6 +666,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
 
     // Set before starting, so a very short first track cannot end before the mode applies.
     playerController.setPlaybackOrderMode("repeat-all");
+    rememberTrackInPlaylist(firstTrack, playlist);
     const started = await playerController.playTrackById(firstTrack.id, tracks);
     if (started) markPlaylistPlayed(playlist.id);
   };
@@ -678,6 +682,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
     const firstTrack = shuffleTracks(tracks)[0];
     if (!firstTrack) return;
 
+    rememberTrackInPlaylist(firstTrack, playlist);
     const started = await playerController.playTrackById(firstTrack.id, tracks, false, true);
     if (!started) return;
     playerController.setShuffleEnabled(true);
