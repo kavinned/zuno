@@ -1,5 +1,4 @@
 import { AnimatePresence, motion } from "motion/react";
-import { SpinnerSteps } from "@/components/motion/loader";
 import { cn } from "@/lib/utils";
 import {
   PauseActiveIcon,
@@ -113,24 +112,58 @@ export function PlaybackControls({ extraControlsAlwaysVisible = true }: Playback
 
       <button
         type="button"
-        className="flex size-11 items-center justify-center rounded-full bg-primary text-primary-foreground transition-[transform,background-color] hover:bg-primary/80 active:scale-95 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className={cn(
+          "flex size-11 items-center justify-center rounded-full bg-primary text-primary-foreground transition-[transform,background-color] hover:bg-primary/80 active:scale-95 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          !hasCurrentTrack && "opacity-40",
+        )}
         onClick={handlePlayPause}
         disabled={isBusy || !hasCurrentTrack}
         aria-label={isBusy ? "Loading song" : isPlaying ? "Pause" : "Play"}
       >
-        <span className="relative grid size-5 place-items-center" aria-hidden="true">
+        <span className="relative flex size-6 items-center justify-center" aria-hidden="true">
           <AnimatePresence initial={false} mode="popLayout">
             {isBusy ? (
-              <motion.span key="loading" {...GLYPH_MOTION} className="absolute">
-                <SpinnerSteps  size={20} />
+              <motion.span
+                key="loading"
+                {...GLYPH_MOTION}
+                className="absolute inset-0 flex items-center justify-center"
+              >
+                <svg
+                  className="size-6 animate-spin text-white"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-30"
+                    cx="12"
+                    cy="12"
+                    r="9.5"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                  />
+                  <path
+                    className="opacity-100"
+                    fill="currentColor"
+                    d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5h-2.5A7 7 0 0 0 12 5z"
+                  />
+                </svg>
               </motion.span>
             ) : isPlaying ? (
-              <motion.span key="pause" {...GLYPH_MOTION} className="absolute">
-                <PauseActiveIcon size={20} />
+              <motion.span
+                key="pause"
+                {...GLYPH_MOTION}
+                className="absolute inset-0 flex items-center justify-center"
+              >
+                <PauseActiveIcon size={22} className="text-white" />
               </motion.span>
             ) : (
-              <motion.span key="play" {...GLYPH_MOTION} className="absolute">
-                <PlayActiveIcon size={20} />
+              <motion.span
+                key="play"
+                {...GLYPH_MOTION}
+                className="absolute inset-0 flex items-center justify-center translate-x-0.5"
+              >
+                <PlayActiveIcon size={22} className="text-white" />
               </motion.span>
             )}
           </AnimatePresence>
