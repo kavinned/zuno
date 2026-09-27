@@ -34,11 +34,11 @@ import {
 import {
   barePlaylistId,
   isTrackKnownInPlaylist,
-  rememberTrackInPlaylist,
+  rememberTrackInPlaylists,
   usePlaylistMembershipVersion,
 } from "../../../player/playlistMembership";
 import { logInternalError } from "../../../internal/logging";
-import type { Playlist, Track } from "../../../datasource/types";
+import type { Playlist } from "../../../datasource/types";
 
 const NO_LOCAL_PLAYLISTS: Playlist[] = [];
 const getNoLocalPlaylists = () => NO_LOCAL_PLAYLISTS;
@@ -69,6 +69,8 @@ export function TrackInfo() {
   const [isDefaultMenuOpen, setIsDefaultMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddingToPlaylist, setIsAddingToPlaylist] = useState(false);
+  const [checkingTrackId, setCheckingTrackId] = useState<string | null>(null);
+  const isCheckingMembership = checkingTrackId === currentTrack?.id;
 
   const localPlaylists = useSyncExternalStore(
     subscribeToLocalPlaylists,
@@ -146,33 +148,37 @@ export function TrackInfo() {
     if (isTrackKnownInPlaylist(currentTrack, targetPlaylist)) return;
 
     let active = true;
-
-    const checkTracks = (tracks: Track[]) => {
-      if (!active) return;
-      const inPlaylist = tracks.some(
-        (t) => t.id === currentTrack.id || (Boolean(currentTrack.localPath) && t.localPath === currentTrack.localPath),
-      );
-      setCheckedMembership({
-        trackId: currentTrack.id,
-        playlistId: targetPlaylist.id,
-        isIn: inPlaylist,
-      });
-      if (inPlaylist) {
-        rememberTrackInPlaylist(currentTrack, targetPlaylist);
-      }
-    };
+    setCheckingTrackId(currentTrack.id);
 
     void libraryController
-      .getPlaylistTracks(targetPlaylist, checkTracks)
-      .then(checkTracks)
+      .getPlaylistIdsContainingTrack(currentTrack)
+      .then((ids) => {
+        if (!active) return;
+        const targetBare = barePlaylistId(targetPlaylist.id);
+        const inPlaylist = ids.some((id) => barePlaylistId(id) === targetBare);
+        setCheckedMembership({
+          trackId: currentTrack.id,
+          playlistId: targetPlaylist.id,
+          isIn: inPlaylist,
+        });
+        if (ids.length > 0) {
+          rememberTrackInPlaylists(currentTrack, ids);
+        }
+      })
       .catch((error: unknown) => {
         logInternalError("TrackInfo.checkDefaultPlaylist failed", error);
+      })
+      .finally(() => {
+        if (active) {
+          setCheckingTrackId(null);
+        }
       });
 
     return () => {
       active = false;
+      setCheckingTrackId((prev) => (prev === currentTrack.id ? null : prev));
     };
-  }, [currentTrack?.id, targetPlaylist?.id, membershipVersion]);
+  }, [currentTrack?.id, targetPlaylist?.id]);
 
   if (!currentTrack) {
     return null;
@@ -227,11 +233,13 @@ export function TrackInfo() {
     setIsDefaultMenuOpen((open) => !open);
   };
 
-  const playlistButtonTitle = defaultPlaylist
-    ? isCurrentTrackInPlaylist
-      ? `In ${defaultPlaylist.title}\n(Right-click to change default)`
-      : `Add to ${defaultPlaylist.title}\n(Right-click to change default)`
-    : "Add to playlist\n(Right-click to set default)";
+  const playlistButtonTitle = isCheckingMembership
+    ? "Checking playlist..."
+    : defaultPlaylist
+      ? isCurrentTrackInPlaylist
+        ? `In ${defaultPlaylist.title}\n(Right-click to change default)`
+        : `Add to ${defaultPlaylist.title}\n(Right-click to change default)`
+      : "Add to playlist\n(Right-click to set default)";
 
   return (
     <div
@@ -339,17 +347,19 @@ export function TrackInfo() {
               )}
               onClick={(e) => void handleAddToPlaylistClick(e)}
               onContextMenu={handleButtonContextMenu}
-              disabled={isAddingToPlaylist}
+              disabled={isAddingToPlaylist || isCheckingMembership}
               aria-label={
-                defaultPlaylist
-                  ? isCurrentTrackInPlaylist
-                    ? `In ${defaultPlaylist.title}`
-                    : `Add to ${defaultPlaylist.title}`
-                  : "Add to playlist"
+                isCheckingMembership
+                  ? "Checking playlist..."
+                  : defaultPlaylist
+                    ? isCurrentTrackInPlaylist
+                      ? `In ${defaultPlaylist.title}`
+                      : `Add to ${defaultPlaylist.title}`
+                    : "Add to playlist"
               }
               title={playlistButtonTitle}
             >
-              {isAddingToPlaylist ? (
+              {isAddingToPlaylist || isCheckingMembership ? (
                 <SpinnerSteps size={18} color="currentColor" />
               ) : (
                 <PlaylistAddIcon size={18} />
