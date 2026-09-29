@@ -85,7 +85,7 @@ export function PlaybackControls({ extraControlsAlwaysVisible = true }: Playback
         className={cn(
           "size-9 shrink-0 transition-opacity",
           !extraControlsAlwaysVisible &&
-            "opacity-0 focus-within:opacity-100 group-hover/playerbar:opacity-100",
+          "opacity-0 focus-within:opacity-100 group-hover/playerbar:opacity-100",
         )}
       >
         <button
@@ -120,54 +120,52 @@ export function PlaybackControls({ extraControlsAlwaysVisible = true }: Playback
         disabled={isBusy || !hasCurrentTrack}
         aria-label={isBusy ? "Loading song" : isPlaying ? "Pause" : "Play"}
       >
-        <span className="relative flex size-6 items-center justify-center" aria-hidden="true">
-          <AnimatePresence initial={false} mode="popLayout">
-            {isBusy ? (
-              <motion.span
-                key="loading"
-                {...GLYPH_MOTION}
-                className="absolute inset-0 flex items-center justify-center"
+        <AnimatePresence initial={false} mode="popLayout" aria-hidden="true">
+          {isBusy ? (
+            <motion.span
+              key="loading"
+              {...GLYPH_MOTION}
+              className="flex items-center justify-center"
+            >
+              <svg
+                className="size-6 animate-spin text-white"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
               >
-                <svg
-                  className="size-6 animate-spin text-white"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <circle
-                    className="opacity-30"
-                    cx="12"
-                    cy="12"
-                    r="9.5"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  />
-                  <path
-                    className="opacity-100"
-                    fill="currentColor"
-                    d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5h-2.5A7 7 0 0 0 12 5z"
-                  />
-                </svg>
-              </motion.span>
-            ) : isPlaying ? (
-              <motion.span
-                key="pause"
-                {...GLYPH_MOTION}
-                className="absolute inset-0 flex items-center justify-center"
-              >
-                <PauseActiveIcon size={22} className="text-white" />
-              </motion.span>
-            ) : (
-              <motion.span
-                key="play"
-                {...GLYPH_MOTION}
-                className="absolute inset-0 flex items-center justify-center translate-x-0.5"
-              >
-                <PlayActiveIcon size={22} className="text-white" />
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </span>
+                <circle
+                  className="opacity-30"
+                  cx="12"
+                  cy="12"
+                  r="9.5"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                />
+                <path
+                  className="opacity-100"
+                  fill="currentColor"
+                  d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5h-2.5A7 7 0 0 0 12 5z"
+                />
+              </svg>
+            </motion.span>
+          ) : isPlaying ? (
+            <motion.span
+              key="pause"
+              {...GLYPH_MOTION}
+              className="flex items-center justify-center p-0 m-0"
+            >
+              <PauseActiveIcon size={22} className="text-white" />
+            </motion.span>
+          ) : (
+            <motion.span
+              key="play"
+              {...GLYPH_MOTION}
+              className="flex items-center justify-center p-0 m-0"
+            >
+              <PlayActiveIcon size={22} className="text-white" />
+            </motion.span>
+          )}
+        </AnimatePresence>
       </button>
 
       <button
@@ -184,7 +182,7 @@ export function PlaybackControls({ extraControlsAlwaysVisible = true }: Playback
         className={cn(
           "size-9 shrink-0 transition-opacity",
           !extraControlsAlwaysVisible &&
-            "opacity-0 focus-within:opacity-100 group-hover/playerbar:opacity-100",
+          "opacity-0 focus-within:opacity-100 group-hover/playerbar:opacity-100",
         )}
       >
         <button
