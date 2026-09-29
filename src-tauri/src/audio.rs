@@ -738,6 +738,7 @@ impl Engine {
 
                 let deck = &mut self.decks[index];
                 deck.sink.stop();
+                deck.sink = Player::connect_new(self._stream.mixer());
                 deck.sink.append(source);
                 deck.sink.pause();
                 deck.sink.set_volume(volume);
