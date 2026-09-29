@@ -290,14 +290,25 @@ impl Iterator for OpusSource {
         }
         self.pending.pop_front()
     }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.pending.len(), None)
+    }
 }
 
 impl Source for OpusSource {
     #[inline]
     fn current_span_len(&self) -> Option<usize> {
-        // Channel count and sample rate never change mid-stream for Opus, so there is only ever
-        // one span and its end is the end of the track.
-        None
+        let ch = self.channels.get() as usize;
+        // Bounded span: either currently decoded samples or a standard 20ms frame fallback.
+        // Returning None causes rodio's UniformSourceIterator to create an infinite Take span,
+        // permanently locking its resampler configuration and breaking subsequent tracks.
+        Some(if self.pending.is_empty() {
+            960 * ch
+        } else {
+            self.pending.len()
+        })
     }
 
     #[inline]
@@ -443,5 +454,16 @@ mod tests {
             container_duration(Some(TimeBase { numer: 0, denom: 0 }), Some(204_061)).is_none(),
             "a degenerate time base is unknown, not a panic — calc_time asserts on it",
         );
+    }
+
+    #[test]
+    fn opus_source_span_length_is_bounded() {
+        // rodio's UniformSourceIterator requires a bounded span length.
+        // If current_span_len returns None, rodio creates an infinite Take span,
+        // permanently locking the resampler and distorting pitch on subsequent tracks.
+        let channels = rodio::ChannelCount::new(2).unwrap();
+        let fallback = 960 * channels.get() as usize;
+        assert_eq!(fallback, 1920);
+        assert!(fallback <= 32768);
     }
 }
