@@ -9,17 +9,8 @@ import {
 import { Switch } from "@/components/motion/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { RangeSlider } from "@/components/motion/range-slider";
-import {
-  activeEqualizerPreset,
-  EQUALIZER_BANDS_HZ,
-  EQUALIZER_MAX_DB,
-  EQUALIZER_PRESETS,
-  isEqualizerFlat,
-  setEqualizer,
-  setEqualizerEnabled,
-  useEqualizer,
-  useEqualizerEnabled,
-} from "../settings/equalizer";
+import { setEqualizerEnabled, useEqualizerEnabled } from "../settings/equalizer";
+import { EqualizerPanel } from "../components/Equalizer";
 import {
   MAX_CROSSFADE_SEC,
   setCrossfadeSec,
@@ -45,6 +36,7 @@ import {
 import {
   BugIcon,
   DownloadIcon,
+  EqualizerIcon,
   FolderAddIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -106,6 +98,11 @@ import {
   usePotatoPcMode,
 } from "../settings/renderEffects";
 import { setMadeForYouVisible, useMadeForYouVisible } from "../settings/homeSections";
+import {
+  SettingsSearch,
+  SettingsSearchResults,
+  type SettingsTab,
+} from "../components/SettingsSearch";
 import { GoogleSignInButton } from "../components/GoogleSignInButton";
 import { ExternalLinkButton } from "../components/ExternalLinkButton";
 import {
@@ -146,8 +143,10 @@ import {
   setMiniPlayerHoverAction,
   useMiniPlayerEnabled,
   useMiniPlayerHoverAction,
+  useMiniPlayerSkin,
   type MiniPlayerHoverAction,
 } from "../settings/miniPlayer";
+import { MiniPlayerSkinPicker } from "../components/mini-player/SkinPicker";
 import {
   setMainWindowGeometryPersistenceEnabled,
   useMainWindowGeometryPersistenceEnabled,
@@ -202,7 +201,10 @@ import {
 } from "../../player/localPlaylists";
 import { LastFmService, type LastFmAuthStart, type LastFmSessionStatus } from "../../player/LastFm";
 import { DiscordRpcService } from "../../player/DiscordRPC";
-import { useDiscordPresenceEnabled } from "../settings/discord";
+import {
+  useDiscordHideWhenPaused,
+  useDiscordPresenceEnabled,
+} from "../settings/discord";
 import {
   setLastFmScrobblingEnabled,
   useLastFmScrobblingEnabled,
@@ -270,113 +272,34 @@ function SettingsDownloadProgress() {
 const SETTINGS_FIELD =
   "min-w-0 rounded-lg bg-background px-2.5 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-inset focus:ring-ring/60";
 
-/**
- * The ten-band equaliser.
- *
- * A component of its own rather than a run of `SettingRow`s because the bands are one control,
- * not eleven: they share a scale, a reset and a set of presets, and reading one slider only
- * means anything next to its neighbours.
- *
- * Sliders are horizontal, stacked. The usual picture of an equaliser is vertical, but that would
- * mean a second slider component built to be rotated, and the frequency and the gain read more
- * clearly written out than inferred from a bar's height.
- *
- * The switch is a bypass, not a reset — it never touches the stored curve, only whether Rust is
- * currently told to apply it. See `setEqualizerEnabled`.
- */
+/** The equaliser card. The switch is a bypass: off dims the curve but leaves it editable. */
 function EqualizerSettings({ engineMode }: { engineMode: AudioEngineMode }) {
-  const equalizer = useEqualizer();
   const enabled = useEqualizerEnabled();
-  // Only the Rust engine has the samples. A track that fell back to the YouTube player plays
-  // unequalised no matter what these say, which the note below is there to admit.
+  // Only the Rust engine has the samples; the YouTube fallback plays unequalised.
   const available = engineMode === "rust";
-  const flat = isEqualizerFlat(equalizer);
-  const labelId = useId();
-
-  const setBand = (index: number, gain: number) => {
-    const bandsDb = equalizer.bandsDb.slice();
-    bandsDb[index] = gain;
-    setEqualizer({ ...equalizer, bandsDb });
-  };
-
-  const activePreset = activeEqualizerPreset(equalizer);
 
   return (
-    <div className={cn("flex flex-col gap-3 pt-1", !available && "opacity-50")}>
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex flex-col gap-0.5">
-          <span id={labelId} className="text-sm font-medium text-foreground">
-            Equaliser
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {available
-              ? enabled
-                ? flat
-                  ? "Flat"
-                  : `${equalizer.preampDb > 0 ? "+" : ""}${equalizer.preampDb} dB preamp`
-                : "Off"
-              : "Needs the Rust playback method"}
-          </span>
-        </div>
-        <Switch
-          checked={enabled}
-          onCheckedChange={setEqualizerEnabled}
-          disabled={!available}
-          aria-labelledby={labelId}
-        />
-      </div>
-
-      {/*
-        * Dimmed, not disabled: the curve is still worth shaping while off, the same way a
-        * hardware EQ's sliders keep moving with the bypass switch flipped — it is what makes
-        * flipping it back on show the shape you already built instead of the flat one it was
-        * silently holding underneath.
-        */}
-      <div className={cn("flex flex-col gap-3", !enabled && "opacity-60")}>
-        <div className="flex flex-wrap gap-2">
-          {EQUALIZER_PRESETS.map((preset) => (
-            <button
-              key={preset.name}
-              type="button"
-              disabled={!available}
-              onClick={() => setEqualizer(preset.settings)}
-              className={cn(
-                "rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                activePreset?.name === preset.name
-                  ? "bg-primary text-primary-foreground"
-                  : "text-foreground hover:bg-card",
-              )}
-            >
-              {preset.name}
-            </button>
-          ))}
-        </div>
-
-        <EqualizerBand
-          label="Preamp"
-          value={equalizer.preampDb}
-          disabled={!available}
-          onChange={(preampDb) => setEqualizer({ ...equalizer, preampDb })}
-        />
-
-        <div className="h-px bg-border" />
-
-        {EQUALIZER_BANDS_HZ.map((hz, index) => (
-          <EqualizerBand
-            key={hz}
-            label={hz >= 1000 ? `${hz / 1000}k` : String(hz)}
-            value={equalizer.bandsDb[index]}
+    <section className={SETTINGS_CARD} aria-labelledby="equalizer-settings-title">
+      <SettingsCardHeader
+        title="Equaliser"
+        titleId="equalizer-settings-title"
+        icon={<EqualizerIcon size={18} aria-hidden="true" />}
+        description={
+          available
+            ? "Ten bands, shaped live on the track that is playing."
+            : "Needs the Rust playback method."
+        }
+        status={
+          <Switch
+            checked={enabled}
+            onCheckedChange={setEqualizerEnabled}
             disabled={!available}
-            onChange={(gain) => setBand(index, gain)}
+            aria-labelledby="equalizer-settings-title"
           />
-        ))}
-      </div>
-
-      <p className="px-1 text-xs text-muted-foreground">
-        Applies immediately, to the track playing. A limiter sits after the bands, so a heavy
-        boost is held back rather than clipped — lower the preamp to hear the difference instead.
-      </p>
-    </div>
+        }
+      />
+      <EqualizerPanel disabled={!available} />
+    </section>
   );
 }
 
@@ -432,41 +355,6 @@ function OutputDeviceSetting({ engineMode }: { engineMode: AudioEngineMode }) {
         </Select>
       )}
     </SettingRow>
-  );
-}
-
-function EqualizerBand({
-  label,
-  value,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  disabled: boolean;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <span className="w-10 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-        {label}
-      </span>
-      <RangeSlider
-        className="min-w-0 flex-1"
-        value={value}
-        min={-EQUALIZER_MAX_DB}
-        max={EQUALIZER_MAX_DB}
-        step={1}
-        showTicks={false}
-        disabled={disabled}
-        onValueChange={onChange}
-        aria-label={`${label} gain in decibels`}
-      />
-      <span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-        {value > 0 ? "+" : ""}
-        {value} dB
-      </span>
-    </div>
   );
 }
 
@@ -666,8 +554,6 @@ function SettingsCardHeader({
 }
 
 /** Quiet outbound links in the page header. */
-type SettingsTab = "about" | "appearance" | "playback" | "system" | "shortcuts" | "window";
-
 type WindowControlStyle = "macos" | "windows" | "native";
 
 const SETTINGS_TABS: Array<{
@@ -749,11 +635,13 @@ export function SettingsPage({
   const [lastFmBusy, setLastFmBusy] = useState(false);
   const [lastFmError, setLastFmError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("about");
+  const [settingsQuery, setSettingsQuery] = useState("");
   const themePreference = useThemePreference();
   const [listeningShortcut, setListeningShortcut] = useState<KeyboardShortcutAction | null>(null);
   const keyboardShortcuts = useKeyboardShortcuts();
   const miniPlayerEnabled = useMiniPlayerEnabled();
   const miniPlayerHoverAction = useMiniPlayerHoverAction();
+  const miniPlayerSkin = useMiniPlayerSkin();
   const sidebarMode = useSidebarMode();
   const audioEngineMode = useAudioEngineMode();
   const authenticatedStreaming = useAuthenticatedStreaming();
@@ -803,6 +691,7 @@ export function SettingsPage({
   const [clearingDownloads, setClearingDownloads] = useState(false);
   const lastFmScrobblingEnabled = useLastFmScrobblingEnabled();
   const discordPresenceEnabled = useDiscordPresenceEnabled();
+  const discordHideWhenPaused = useDiscordHideWhenPaused();
   const localPlaylists = useSyncExternalStore(
     subscribeToLocalPlaylists,
     getLocalPlaylists,
@@ -1139,8 +1028,8 @@ export function SettingsPage({
   };
 
   return (
-    <main className="flex min-h-0 flex-1 flex-col gap-7">
-      <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+    <main className="@container/settings flex min-h-0 flex-1 flex-col gap-7">
+      <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 @max-4xl/settings:flex-col @max-4xl/settings:items-stretch">
         <div className="flex flex-col gap-1.5">
           <h1>Settings</h1>
           <p className="text-sm text-muted-foreground">
@@ -1153,7 +1042,10 @@ export function SettingsPage({
           part of the description above and were routinely missed. They stay unfilled so they
           still sit below the category nav in the hierarchy.
         */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 @max-4xl/settings:justify-start">
+          <div className="w-72 max-w-full @max-4xl/settings:w-full">
+            <SettingsSearch query={settingsQuery} onQueryChange={setSettingsQuery} />
+          </div>
           <ExternalLinkButton
             icon={<StarIcon size={16} aria-hidden="true" />}
             label="Star on GitHub"
@@ -1167,12 +1059,11 @@ export function SettingsPage({
         </div>
       </header>
 
-      {/* Vertical nav rather than a pill row: it has room for a description per
-          category and scales as sections are added, the way desktop settings do.
-          The nav sticks so the categories stay reachable while a long panel scrolls. */}
-      <div className="flex min-h-0 flex-1 items-start gap-10">
+      {/* The category rail follows this pane's width, not the application viewport: an embedded
+          or scaled Settings pane can be narrow even on a wide desktop window. */}
+      <div className="flex min-h-0 flex-1 items-start gap-10 @max-4xl/settings:flex-col @max-4xl/settings:gap-4">
         <nav
-          className="sticky top-0 flex w-56 shrink-0 flex-col gap-0.5"
+          className="sticky top-0 flex w-56 shrink-0 flex-col gap-0.5 @max-4xl/settings:relative @max-4xl/settings:w-full @max-4xl/settings:flex-row @max-4xl/settings:overflow-x-auto @max-4xl/settings:rounded-xl @max-4xl/settings:bg-card/50 @max-4xl/settings:p-1"
           role="tablist"
           aria-label="Settings categories"
         >
@@ -1187,7 +1078,7 @@ export function SettingsPage({
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 className={cn(
-                  "group/tab relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                  "group/tab relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors @max-4xl/settings:shrink-0 @max-4xl/settings:px-2.5 @max-4xl/settings:py-2",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   isActive ? "text-foreground" : "text-muted-foreground hover:bg-card/60 hover:text-foreground",
                 )}
@@ -1209,7 +1100,7 @@ export function SettingsPage({
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">{tab.label}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
+                  <span className="block truncate text-xs text-muted-foreground @max-4xl/settings:hidden">
                     {tab.description}
                   </span>
                 </span>
@@ -1218,8 +1109,17 @@ export function SettingsPage({
           })}
         </nav>
 
-        <div className="flex min-h-0 w-full min-w-0 max-w-2xl flex-1 flex-col">
-
+        <div className="flex min-h-0 w-full min-w-0 max-w-2xl flex-1 flex-col @max-4xl/settings:max-w-none">
+          {settingsQuery.trim() ? (
+            <SettingsSearchResults
+              query={settingsQuery}
+              onSelect={(tab) => {
+                setActiveTab(tab);
+                setSettingsQuery("");
+              }}
+            />
+          ) : (
+            <>
       {activeTab === "about" && (
         <div className="flex flex-col gap-5" role="tabpanel" aria-label="About settings">
           <section className={SETTINGS_CARD} aria-labelledby="account-settings-title">
@@ -1378,6 +1278,13 @@ export function SettingsPage({
                 description="Publishes the current track, artist and artwork to your Discord profile. Turning this off clears whatever is showing there now."
                 checked={discordPresenceEnabled}
                 onCheckedChange={(enabled) => void DiscordRpcService.setEnabled(enabled)}
+              />
+              <SettingToggle
+                title="Hide status when paused"
+                description="Clear your Discord Rich Presence while playback is paused. It returns when playback resumes."
+                checked={discordHideWhenPaused}
+                disabled={!discordPresenceEnabled}
+                onCheckedChange={(hidden) => void DiscordRpcService.setHideWhenPaused(hidden)}
               />
             </div>
           </section>
@@ -1865,7 +1772,7 @@ export function SettingsPage({
 
             <SettingToggle
               title="Minimize to tray"
-              description="Closing the window hides Zuno to the system tray and keeps playing. Quit from the tray icon."
+              description="Closing the window hides Zuno to the system tray and keeps playing. When off, no tray icon is shown."
               checked={minimizeToTray}
               onCheckedChange={setMinimizeToTray}
             />
@@ -2023,6 +1930,14 @@ export function SettingsPage({
               onCheckedChange={setMiniPlayerEnabled}
             />
 
+            <div className="flex flex-col gap-3">
+              <span id="mini-player-skin-label" className={SETTING_LABEL}>
+                <strong>Mini player skin</strong>
+                <span>How the mini player looks. It opens in the new skin the next time it appears.</span>
+              </span>
+              <MiniPlayerSkinPicker labelledBy="mini-player-skin-label" />
+            </div>
+
             <SettingRow
               title="Library sidebar"
               description="How much room the playlist rail takes. Expand on hover keeps the collapsed width while still letting you read the list."
@@ -2047,27 +1962,29 @@ export function SettingsPage({
               )}
             </SettingRow>
 
-            <SettingRow
-              title="Mini player hover bar"
-              description="Choose what the expanded hover slider controls."
-            >
-              {() => (
-                <Select
-                  className="w-44"
-                  value={miniPlayerHoverAction}
-                  onValueChange={(value) =>
-                    setMiniPlayerHoverAction(value as MiniPlayerHoverAction)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="seek">Song position</SelectItem>
-                    <SelectItem value="volume">Volume</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            </SettingRow>
+            {miniPlayerSkin === "classic" && (
+              <SettingRow
+                title="Mini player hover bar"
+                description="Choose what the expanded hover slider controls."
+              >
+                {() => (
+                  <Select
+                    className="w-44"
+                    value={miniPlayerHoverAction}
+                    onValueChange={(value) =>
+                      setMiniPlayerHoverAction(value as MiniPlayerHoverAction)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="seek">Song position</SelectItem>
+                      <SelectItem value="volume">Volume</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </SettingRow>
+            )}
 
             <div className="flex items-center justify-between gap-4 py-2">
               <span className={SETTING_LABEL}>
@@ -2202,8 +2119,6 @@ export function SettingsPage({
 
             <OutputDeviceSetting engineMode={audioEngineMode} />
 
-            <EqualizerSettings engineMode={audioEngineMode} />
-
             <SettingToggle
               title="Resolve streams as your account"
               description="Attaches your session when resolving a track — required for Premium bitrates. Downloads always resolve anonymously."
@@ -2223,6 +2138,8 @@ export function SettingsPage({
               }}
             />
           </section>
+
+          <EqualizerSettings engineMode={audioEngineMode} />
 
           <section className={SETTINGS_CARD} aria-labelledby="playback-settings-title">
             <SettingsCardHeader
@@ -2394,7 +2311,8 @@ export function SettingsPage({
           </section>
         </div>
       )}
-
+            </>
+          )}
         </div>
       </div>
     </main>

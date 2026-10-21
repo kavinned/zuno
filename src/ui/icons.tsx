@@ -117,6 +117,8 @@ export { KeyIcon } from "@solar-icons/react/linear/key";
 export { BugIcon } from "@solar-icons/react/linear/bug";
 export { ClockCircleIcon as ClockIcon } from "@solar-icons/react/linear/clock-circle";
 export { SpeedometerMaxIcon as SpeedIcon } from "@solar-icons/react/linear/speedometer-max";
+export { Tuning2Icon as EqualizerIcon } from "@solar-icons/react/linear/tuning-2";
+export { DisketteIcon as SaveIcon } from "@solar-icons/react/linear/diskette";
 export { CupHotIcon as CoffeeIcon } from "@solar-icons/react/linear/cup-hot";
 export { MagicWandIcon as DiceIcon } from "@solar-icons/react/linear/magic-wand";
 export { MagicWandIcon as DiceActiveIcon } from "@solar-icons/react/bold/magic-wand";

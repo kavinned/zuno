@@ -14,6 +14,7 @@ import {
 import { logInternalDebug } from "../../internal/logging";
 import { tauriFetch } from "../../datasource/youtube/tauriFetch";
 import { LOCAL_ARTWORK_PREFIX, LOCAL_IMAGE_PREFIX } from "../../player/localPlaylists";
+import { OFFLINE_ARTWORK_PREFIX, useOfflineArtworkUrl } from "../../player/offlineStore";
 
 const ARTWORK_RETRY_DELAYS_MS = [500, 1500];
 
@@ -62,7 +63,7 @@ interface TrackArtworkProps {
 }
 
 export function TrackArtwork({
-  artworkUrl,
+  artworkUrl: sourceArtworkUrl,
   className,
   iconSize = 24,
   loading = "lazy",
@@ -71,6 +72,9 @@ export function TrackArtwork({
   size,
   variant = "track",
 }: TrackArtworkProps) {
+  // A downloaded song's cover is read from disk, so it shows offline and skips the network online.
+  const offlineArtworkUrl = useOfflineArtworkUrl(sourceArtworkUrl);
+  const artworkUrl = offlineArtworkUrl ?? sourceArtworkUrl;
   const sizeBucket = size == null ? null : getArtworkSizeBucket(size);
   /*
    * Resolutions are cached per source *and* per requested size.
@@ -89,7 +93,8 @@ export function TrackArtwork({
   // proxy effect below reads them through Rust instead.
   const isEmbeddedArtwork = Boolean(artworkUrl?.startsWith(LOCAL_ARTWORK_PREFIX));
   const isLocalImage = Boolean(artworkUrl?.startsWith(LOCAL_IMAGE_PREFIX));
-  const isLocalArtwork = isEmbeddedArtwork || isLocalImage;
+  const isOfflineArtwork = Boolean(offlineArtworkUrl);
+  const isLocalArtwork = isEmbeddedArtwork || isLocalImage || isOfflineArtwork;
   const artworkCandidates = useMemo(() => {
     if (!artworkUrl?.trim()) return [];
     const cached = cacheKey ? getResolvedArtworkUrl(cacheKey) : undefined;
@@ -192,10 +197,15 @@ export function TrackArtwork({
       // Embedded cover: read it out of the file's tags. Same cache, same object-URL budget,
       // same request sharing — only where the bytes come from differs.
       if (isLocalArtwork) {
-        if (isLocalImage) {
-          const artwork = await invoke<{ mimeType: string; dataBase64: string }>("read_image_file", {
-            path: artworkUrl.slice(LOCAL_IMAGE_PREFIX.length),
-          });
+        if (isOfflineArtwork || isLocalImage) {
+          const artwork = isOfflineArtwork
+            ? await invoke<{ mimeType: string; dataBase64: string } | null>("offline_artwork", {
+              trackId: artworkUrl.slice(OFFLINE_ARTWORK_PREFIX.length),
+            })
+            : await invoke<{ mimeType: string; dataBase64: string }>("read_image_file", {
+              path: artworkUrl.slice(LOCAL_IMAGE_PREFIX.length),
+            });
+          if (!artwork) throw new Error("This file carries no embedded artwork.");
           const bytes = Uint8Array.from(atob(artwork.dataBase64), (char) => char.charCodeAt(0));
           return new Blob([bytes], { type: artwork.mimeType });
         }
@@ -228,6 +238,7 @@ export function TrackArtwork({
     cacheKey,
     isLocalArtwork,
     isLocalImage,
+    isOfflineArtwork,
     preferProxy,
     sizeBucket,
     proxiedArtworkUrl,

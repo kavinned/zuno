@@ -71,6 +71,7 @@ import type {
   FeedNotification,
   LibrarySnapshot,
   Lyrics,
+  LyricsQuery,
   LyricsSourceAttempt,
   Playlist,
   ResolvedLink,
@@ -241,6 +242,10 @@ type BetterLyricsResponse = {
 /* Rank used to live on the result as a `priority` number that nothing ever read — the winner
    was really decided by the order of an array literal. It is now the LYRICS_SOURCES table. */
 type LyricsProviderResult = Lyrics;
+
+type SimpMusicResponse = {
+  data?: Array<{ syncedLyrics?: string | null; vote?: number }>;
+};
 
 type RawLikeEndpoint = {
   status?: string;
@@ -573,7 +578,12 @@ export class YouTubeMusicDataSource extends DataSource {
   private getMusicClient(): Promise<Innertube> {
     if (!this.musicClientPromise) {
       logInternalInfo("YouTubeMusicDataSource.getMusicClient creating client");
-      this.musicClientPromise = this.createMusicClient(true);
+      const promise = this.createMusicClient(true);
+      // A failure (offline at launch) must not be cached, or every call fails until restart.
+      promise.catch(() => {
+        if (this.musicClientPromise === promise) this.musicClientPromise = null;
+      });
+      this.musicClientPromise = promise;
     }
 
     return this.musicClientPromise;
@@ -584,13 +594,17 @@ export class YouTubeMusicDataSource extends DataSource {
       logInternalInfo("YouTubeMusicDataSource.getWebClient creating client");
       // No player needed: this client only enumerates accounts and resolves like endpoints,
       // neither of which touches stream URLs, and retrieving it downloads the player script.
-      this.webClientPromise = (async () => {
+      const promise = (async () => {
         await this.ensureYouTubeI();
         return Innertube.create({
           ...this.getSessionOptions(false),
           client_type: ClientType.WEB,
         });
       })();
+      promise.catch(() => {
+        if (this.webClientPromise === promise) this.webClientPromise = null;
+      });
+      this.webClientPromise = promise;
     }
 
     return this.webClientPromise;
@@ -619,7 +633,7 @@ export class YouTubeMusicDataSource extends DataSource {
   private getDownloadClient(): Promise<Innertube> {
     if (!this.downloadClientPromise) {
       logInternalInfo("YouTubeMusicDataSource.getDownloadClient creating client");
-      this.downloadClientPromise = (async () => {
+      const promise = (async () => {
         await this.ensureYouTubeI();
         const bootstrap = await Innertube.create({
           fetch: tauriFetch,
@@ -639,6 +653,15 @@ export class YouTubeMusicDataSource extends DataSource {
         await this.refreshMusicClientMetadata(client);
         return client;
       })();
+      /*
+       * Never cache a failure. Built offline at launch, it used to stay rejected for the whole
+       * session, so every stream fell back to the music client, whose URLs googlevideo refuses
+       * after the first chunk — songs cut out after a few seconds and were skipped.
+       */
+      promise.catch(() => {
+        if (this.downloadClientPromise === promise) this.downloadClientPromise = null;
+      });
+      this.downloadClientPromise = promise;
     }
 
     return this.downloadClientPromise;
@@ -3071,7 +3094,16 @@ export class YouTubeMusicDataSource extends DataSource {
        * fields are already the values it assigns.
        */
       this.resetMusicClients();
-      await this.getMusicClient();
+      /*
+       * Offline, the client cannot be built, but the stored credential is still the session:
+       * failing here used to fall through to "signed out" and hide the cached library and
+       * downloads. The client is built on first use once the network is back.
+       */
+      await this.getMusicClient().catch((error) => {
+        logInternalWarn("YouTubeMusicDataSource.restoreSession client deferred", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       logInternalInfo("YouTubeMusicDataSource.restoreSession success");
       return true;
     } catch (error) {
@@ -4724,7 +4756,7 @@ export class YouTubeMusicDataSource extends DataSource {
     }
   }
 
-  async getLyrics(track: Track): Promise<Lyrics> {
+  async getLyrics(track: Track, query?: LyricsQuery): Promise<Lyrics> {
     /*
      * Local files: look for a .vtt sibling before hitting the network.
      *
@@ -4755,9 +4787,12 @@ export class YouTubeMusicDataSource extends DataSource {
      * one key would mean changing the setting appears to do nothing until the cache expires.
      */
     const cacheKey = `lyrics:synced:v3:${getPreferredLyricsSourceId()}:${track.id}`;
-    const cached = await getCachedJson<Lyrics>(cacheKey);
-    if (cached?.timing === "synced" && cached.lines.length > 0) {
-      return { ...cached, cached: true };
+    // A manual search (#89) skips the cache and overwrites it on a synced hit, so the fix sticks.
+    if (!query) {
+      const cached = await getCachedJson<Lyrics>(cacheKey);
+      if (cached?.timing === "synced" && cached.lines.length > 0) {
+        return { ...cached, cached: true };
+      }
     }
 
     /*
@@ -4777,6 +4812,10 @@ export class YouTubeMusicDataSource extends DataSource {
       }
     }
 
+    const searchTrack = query
+      ? { ...trackToFetch, title: query.title, artist: query.artist, artists: undefined, album: undefined }
+      : trackToFetch;
+
     /*
      * Dedup key includes whether durationSec is available.
      *
@@ -4794,12 +4833,12 @@ export class YouTubeMusicDataSource extends DataSource {
     const hasDuration = Boolean(trackToFetch.durationSec && trackToFetch.durationSec > 0);
     const dedupKey = `${trackToFetch.id}:${hasDuration ? "dur" : "nodur"}`;
 
-    let refresh = this.lyricsRefreshPromises.get(dedupKey);
+    let refresh = query ? undefined : this.lyricsRefreshPromises.get(dedupKey);
     if (!refresh) {
-      refresh = this.fetchSyncedLyrics(trackToFetch).finally(() => {
-        this.lyricsRefreshPromises.delete(dedupKey);
+      refresh = this.fetchSyncedLyrics(searchTrack).finally(() => {
+        if (!query) this.lyricsRefreshPromises.delete(dedupKey);
       });
-      this.lyricsRefreshPromises.set(dedupKey, refresh);
+      if (!query) this.lyricsRefreshPromises.set(dedupKey, refresh);
     }
 
     const lyrics = await refresh;
@@ -4823,10 +4862,17 @@ export class YouTubeMusicDataSource extends DataSource {
   private async fetchSyncedLyrics(track: Track): Promise<Lyrics> {
     logInternalInfo("YouTubeMusicDataSource.getLyrics start", { trackId: track.id });
 
+    // Queue rows carry no duration, so an auto-advanced track used to skip both LRCLIB sources (#153).
+    if (!track.durationSec && track.source === "youtube") {
+      const durationSec = (await this.getTrack(track.id).catch(() => null))?.durationSec;
+      if (durationSec) track = { ...track, durationSec };
+    }
+
     const runners: Record<string, () => Promise<Lyrics | null>> = {
       "lrclib-exact": () => this.fetchLrcLibExactLyrics(track),
       betterlyrics: () => this.fetchBetterLyrics(track),
       "lrclib-search": () => this.fetchLrcLibSearchLyrics(track),
+      simpmusic: () => this.fetchSimpMusicLyrics(track),
       "youtube-transcript": () => this.fetchYouTubeTranscriptLyrics(track),
       "youtube-music": () => this.fetchYouTubeMusicLyrics(track),
     };
@@ -5096,6 +5142,28 @@ export class YouTubeMusicDataSource extends DataSource {
     }
 
     return null;
+  }
+
+  // Keyed by video ID, so never another recording; ranked below LRCLIB because entries can be translations (#129).
+  private async fetchSimpMusicLyrics(track: Track): Promise<LyricsProviderResult | null> {
+    const response = await tauriFetch(
+      `https://api-lyrics.simpmusic.org/v1/${encodeURIComponent(track.id)}`,
+      { headers: this.getLyricsRequestHeaders(), timeoutMs: 3_500 },
+    );
+    if (!response.ok) return null;
+
+    const body = await response.json() as SimpMusicResponse;
+    const best = (body.data ?? [])
+      .filter((entry) => entry.syncedLyrics)
+      .sort((left, right) => (right.vote ?? 0) - (left.vote ?? 0))[0];
+    const lines = best?.syncedLyrics ? this.parseSyncedLyrics(best.syncedLyrics) : [];
+    if (lines.length === 0) return null;
+
+    logInternalInfo("YouTubeMusicDataSource.getLyrics SimpMusic success", {
+      trackId: track.id,
+      lineCount: lines.length,
+    });
+    return { lines, timing: "synced", sourceLabel: "SimpMusic" };
   }
 
   private toLrcLibLyrics(
@@ -5855,7 +5923,10 @@ export class YouTubeMusicDataSource extends DataSource {
         logInternalWarn("YouTubeMusicDataSource.getStreamData client failed", {
           trackId: track.id,
           client: label,
-          error: error instanceof Error ? error.message : String(error),
+          // tauriFetch rejects with a plain `{ message }`, which String() turns into "[object Object]".
+          error: error instanceof Error
+            ? error.message
+            : (error as { message?: string } | null)?.message ?? String(error),
         });
       }
     }

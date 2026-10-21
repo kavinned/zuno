@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -577,6 +577,24 @@ fn cache_error(message: impl Into<String>) -> CommandError {
     }
 }
 
+// OS trust store, read once; bundled roots alone reject TLS-inspecting proxies/AV (#143).
+static NATIVE_ROOT_CERTS: LazyLock<Vec<reqwest::Certificate>> = LazyLock::new(|| {
+    rustls_native_certs::load_native_certs()
+        .certs
+        .into_iter()
+        // One cert rustls rejects would fail every client build.
+        .filter(|cert| rustls::RootCertStore::empty().add(cert.clone()).is_ok())
+        .filter_map(|cert| reqwest::Certificate::from_der(&cert).ok())
+        .collect()
+});
+
+pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
+    NATIVE_ROOT_CERTS
+        .iter()
+        .cloned()
+        .fold(reqwest::Client::builder(), reqwest::ClientBuilder::add_root_certificate)
+}
+
 fn signed_googlevideo_local_address(url: &url::Url) -> Option<IpAddr> {
     if !url
         .host_str()
@@ -712,19 +730,25 @@ fn read_image_file(path: String) -> Result<LocalArtwork, CommandError> {
         return Err(cache_error("that image is too large to embed"));
     }
 
-    let mime_type = match data.as_slice() {
-        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
-        [0x89, b'P', b'N', b'G', ..] => "image/png",
-        [b'G', b'I', b'F', b'8', ..] => "image/gif",
-        [b'B', b'M', ..] => "image/bmp",
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
-        _ => return Err(cache_error("that file is not a PNG, JPEG, GIF, BMP or WebP image")),
+    let Some(mime_type) = sniff_image_mime(&data) else {
+        return Err(cache_error("that file is not a PNG, JPEG, GIF, BMP or WebP image"));
     };
 
     Ok(LocalArtwork {
         mime_type: mime_type.to_string(),
         data_base64: base64::engine::general_purpose::STANDARD.encode(&data),
     })
+}
+
+fn sniff_image_mime(data: &[u8]) -> Option<&'static str> {
+    match data {
+        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'B', b'M', ..] => Some("image/bmp"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
+    }
 }
 
 pub(crate) fn extract_local_audio_artwork(path: &Path) -> Result<Option<(String, Vec<u8>)>, CommandError> {
@@ -1169,12 +1193,26 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), CommandEr
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, bytes)
         .map_err(|error| cache_error(format!("cache write failed: {error}")))?;
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| cache_error(format!("cache replacement failed: {error}")))?;
+    /*
+     * `rename` replaces the target on every platform, so the old file stays until the new one
+     * lands. Deleting it first meant a failed rename lost the whole settings file (#155).
+     *
+     * Retried because on Windows a virus scanner or the indexer often holds a just-written
+     * file for a moment, and the rename fails until it lets go.
+     */
+    let mut attempts = 0;
+    loop {
+        match fs::rename(&temp_path, path) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempts < 10 => {
+                attempts += 1;
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Err(cache_error(format!("cache finalize failed: {error}")));
+            }
+        }
     }
-    fs::rename(&temp_path, path)
-        .map_err(|error| cache_error(format!("cache finalize failed: {error}")))
 }
 
 fn app_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
@@ -1228,6 +1266,9 @@ fn app_setting_set(
         message: "application settings lock unavailable".to_string(),
     })?;
     let mut settings = read_app_settings(&app)?;
+    if key == MINIMIZE_TO_TRAY_SETTING {
+        set_tray_visible(&app, value.as_bool().unwrap_or(false));
+    }
     settings.insert(key, value);
     write_json_file(&app_settings_path(&app)?, &settings)
 }
@@ -1651,6 +1692,13 @@ fn close_or_hide_main_window(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+// The tray only exists to bring back a hidden window, so it follows minimize-to-tray (#145).
+fn set_tray_visible(app: &tauri::AppHandle, visible: bool) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_visible(visible);
+    }
+}
+
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{TrayIconBuilder, TrayIconEvent};
@@ -1846,8 +1894,10 @@ fn delete_youtube_music_cookie_entries() -> Result<(), CommandError> {
     }
 
     for index in 0..YOUTUBE_COOKIE_MAX_CHUNKS {
+        // Chunks are contiguous, so stop at the first gap; sweeping every slot floods D-Bus (#144).
         match youtube_cookie_chunk_entry(index)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Ok(()) => {}
+            Err(keyring::Error::NoEntry) => break,
             Err(error) => {
                 return Err(CommandError {
                     message: format!("YouTube Music session chunk {index} delete failed: {error}"),
@@ -2466,6 +2516,22 @@ async fn sign_in_youtube_music(
     let window = build_login_window(&app, true, Arc::new(AtomicBool::new(false)), &candidate_slot_id)?;
     eprintln!("[internal][tauri][info] sign_in_youtube_music login window created");
 
+    let result = poll_for_sign_in(&app, &jar, &account_lock, &window, &candidate_slot_id);
+    // Any failure (cancel, timeout, keyring error) must not leave the window up or the partition behind (#144).
+    if result.is_err() {
+        let _ = window.close();
+        remove_login_partition(&app, &candidate_slot_id);
+    }
+    result
+}
+
+fn poll_for_sign_in(
+    app: &tauri::AppHandle,
+    jar: &YoutubeCookieJar,
+    account_lock: &AccountStoreLock,
+    window: &tauri::WebviewWindow,
+    candidate_slot_id: &str,
+) -> Result<SignInResult, CommandError> {
     let login_url = YOUTUBE_LOGIN_URL.parse().map_err(|error| CommandError {
         message: format!("invalid YouTube Music sign-in URL: {error}"),
     })?;
@@ -2475,19 +2541,24 @@ async fn sign_in_youtube_music(
     eprintln!("[internal][tauri][info] sign_in_youtube_music navigated to Google sign-in");
 
     for poll in 1..=300 {
-        if let Some(cookie_header) = harvest_session_cookie(&window)? {
+        let harvested = match harvest_session_cookie(window) {
+            // Closing the window mid-read fails the read on macOS; that is still a cancel (#143).
+            Err(_) if app.get_webview_window(YOUTUBE_LOGIN_WINDOW).is_none() => None,
+            other => other?,
+        };
+        if let Some(cookie_header) = harvested {
             let (slot_id, account_changed, reused_existing_slot) = {
                 let _guard = account_lock.0.lock().map_err(|_| CommandError {
                     message: "account store lock unavailable".to_string(),
                 })?;
-                let mut store = load_account_store(&app)?;
+                let mut store = load_account_store(app)?;
                 let (slot_id, account_changed) =
-                    store.upsert_signed_in_account(&cookie_header, candidate_slot_id.clone());
-                save_account_store(&app, &store)?;
+                    store.upsert_signed_in_account(&cookie_header, candidate_slot_id.to_string());
+                save_account_store(app, &store)?;
                 (slot_id.clone(), account_changed, slot_id != candidate_slot_id)
             };
             if reused_existing_slot {
-                remove_login_partition(&app, &candidate_slot_id);
+                remove_login_partition(app, candidate_slot_id);
             }
             if let Ok(mut state) = jar.0.lock() {
                 state.cookie = Some(cookie_header.clone());
@@ -2514,7 +2585,6 @@ async fn sign_in_youtube_music(
                 "[internal][tauri][warn] sign_in_youtube_music cancelled poll={}",
                 poll
             );
-            remove_login_partition(&app, &candidate_slot_id);
             return Err(CommandError {
                 message: "YouTube Music sign-in was cancelled.".to_string(),
             });
@@ -2522,8 +2592,6 @@ async fn sign_in_youtube_music(
         thread::sleep(Duration::from_secs(1));
     }
 
-    let _ = window.close();
-    remove_login_partition(&app, &candidate_slot_id);
     eprintln!("[internal][tauri][warn] sign_in_youtube_music timed out");
     Err(CommandError {
         message: "YouTube Music sign-in timed out.".to_string(),
@@ -2566,34 +2634,37 @@ async fn refresh_youtube_music_cookie(
     let loaded = Arc::new(AtomicBool::new(false));
     let window = build_login_window(&app, false, loaded.clone(), &active_slot_id)?;
 
-    let login_url = YOUTUBE_LOGIN_URL.parse().map_err(|error| CommandError {
-        message: format!("invalid YouTube Music sign-in URL: {error}"),
-    })?;
-    window.navigate(login_url).map_err(|error| CommandError {
-        message: format!("unable to renew the YouTube Music session silently: {error}"),
-    })?;
+    // Closed on every exit: an early error used to leave the hidden window running.
+    let result = (|| {
+        let login_url = YOUTUBE_LOGIN_URL.parse().map_err(|error| CommandError {
+            message: format!("invalid YouTube Music sign-in URL: {error}"),
+        })?;
+        window.navigate(login_url).map_err(|error| CommandError {
+            message: format!("unable to renew the YouTube Music session silently: {error}"),
+        })?;
 
-    for poll in 1..=YOUTUBE_SILENT_REFRESH_POLLS {
-        // Only after a load: harvesting early returns the same stale cookie we came in with,
-        // because nothing has been through a round trip to Google yet.
-        if loaded.load(Ordering::Relaxed) {
-            if let Some(cookie_header) = harvest_session_cookie(&window)? {
-                eprintln!(
-                    "[internal][tauri][info] refresh_youtube_music_cookie renewed poll={} credential_bytes={}",
-                    poll,
-                    cookie_header.len()
-                );
-                persist_active_account_cookie(&app, &account_lock, &jar, &active_slot_id, &cookie_header)?;
-                let _ = window.close();
-                return Ok(Some(cookie_header));
+        for poll in 1..=YOUTUBE_SILENT_REFRESH_POLLS {
+            // Only after a load: harvesting early returns the same stale cookie we came in with,
+            // because nothing has been through a round trip to Google yet.
+            if loaded.load(Ordering::Relaxed) {
+                if let Some(cookie_header) = harvest_session_cookie(&window)? {
+                    eprintln!(
+                        "[internal][tauri][info] refresh_youtube_music_cookie renewed poll={} credential_bytes={}",
+                        poll,
+                        cookie_header.len()
+                    );
+                    persist_active_account_cookie(&app, &account_lock, &jar, &active_slot_id, &cookie_header)?;
+                    return Ok(Some(cookie_header));
+                }
             }
+            thread::sleep(Duration::from_secs(1));
         }
-        thread::sleep(Duration::from_secs(1));
-    }
 
+        eprintln!("[internal][tauri][info] refresh_youtube_music_cookie found no usable session");
+        Ok(None)
+    })();
     let _ = window.close();
-    eprintln!("[internal][tauri][info] refresh_youtube_music_cookie found no usable session");
-    Ok(None)
+    result
 }
 
 /// Signs out of whichever account is currently active — today's one-account "sign out".
@@ -3084,7 +3155,7 @@ async fn fetch_audio_bytes(
     let request_url = url::Url::parse(&url).map_err(|error| CommandError {
         message: format!("audio URL parse failed: {error}"),
     })?;
-    let mut client_builder = reqwest::Client::builder();
+    let mut client_builder = http_client_builder();
     if let Some(local_address) = signed_googlevideo_local_address(&request_url) {
         eprintln!(
             "[internal][tauri][info] fetch_audio_bytes forcing signed IP family family={}",
@@ -3153,6 +3224,7 @@ fn offline_entry_path(app: &tauri::AppHandle, track_id: &str) -> Result<PathBuf,
 struct OfflineEntryInfo {
     track_id: String,
     byte_length: u64,
+    has_artwork: bool,
 }
 
 #[derive(Serialize)]
@@ -3284,7 +3356,7 @@ fn audio_chunk_size(total: u64) -> u64 {
 }
 
 fn offline_http_client(request_url: &url::Url) -> Result<reqwest::Client, CommandError> {
-    let mut client_builder = reqwest::Client::builder();
+    let mut client_builder = http_client_builder();
     if let Some(local_address) = signed_googlevideo_local_address(request_url) {
         client_builder = client_builder.local_address(local_address);
     }
@@ -3645,11 +3717,69 @@ fn offline_audio_has(app: tauri::AppHandle, track_id: String) -> Result<bool, Co
 #[tauri::command]
 fn offline_audio_remove(app: tauri::AppHandle, track_id: String) -> Result<(), CommandError> {
     let path = offline_entry_path(&app, &track_id)?;
+    let _ = fs::remove_file(path.with_extension("art"));
     if path.exists() {
         fs::remove_file(&path)
             .map_err(|error| cache_error(format!("offline delete failed: {error}")))?;
     }
     Ok(())
+}
+
+/// The saved cover behind an `offline-artwork:<trackId>` URL, for the OS media controls.
+pub(crate) fn offline_artwork_file(app: &tauri::AppHandle, url: &str) -> Option<PathBuf> {
+    let track_id = url.strip_prefix("offline-artwork:")?;
+    let path = offline_entry_path(app, track_id).ok()?.with_extension("art");
+    path.is_file().then_some(path)
+}
+
+/// Saves a downloaded track's cover next to its audio, so it still shows with no network.
+#[tauri::command]
+async fn offline_artwork_save(
+    app: tauri::AppHandle,
+    track_id: String,
+    url: String,
+) -> Result<(), CommandError> {
+    let path = offline_entry_path(&app, &track_id)?.with_extension("art");
+    if !url.starts_with("https://") {
+        return Err(cache_error("artwork URL must be https"));
+    }
+    let client = http_client_builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| cache_error(format!("artwork client creation failed: {error}")))?;
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| cache_error(format!("artwork request failed: {error}")))?
+        .bytes()
+        .await
+        .map_err(|error| cache_error(format!("artwork read failed: {error}")))?;
+    if bytes.len() > MAX_ARTWORK_BYTES || sniff_image_mime(&bytes).is_none() {
+        return Err(cache_error("artwork response is not a usable image"));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| cache_error(format!("offline directory creation failed: {error}")))?;
+    }
+    fs::write(&path, &bytes).map_err(|error| cache_error(format!("artwork save failed: {error}")))
+}
+
+#[tauri::command]
+fn offline_artwork(app: tauri::AppHandle, track_id: String) -> Result<Option<LocalArtwork>, CommandError> {
+    use base64::Engine;
+
+    let path = offline_entry_path(&app, &track_id)?.with_extension("art");
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(cache_error(format!("artwork read failed: {error}"))),
+    };
+    Ok(sniff_image_mime(&data).map(|mime_type| LocalArtwork {
+        mime_type: mime_type.to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&data),
+    }))
 }
 
 /// The source of truth for what is downloaded. The frontend keeps its own manifest for track
@@ -3675,6 +3805,7 @@ fn offline_audio_list(app: tauri::AppHandle) -> Result<Vec<OfflineEntryInfo>, Co
         entries.push(OfflineEntryInfo {
             track_id: track_id.to_string(),
             byte_length: entry.metadata().map(|meta| meta.len()).unwrap_or(0),
+            has_artwork: path.with_extension("art").exists(),
         });
     }
     Ok(entries)
@@ -3726,6 +3857,7 @@ fn offline_audio_prune(app: tauri::AppHandle, max_bytes: u64) -> Result<OfflineS
             break;
         }
         if fs::remove_file(path).is_ok() {
+            let _ = fs::remove_file(path.with_extension("art"));
             used_bytes = used_bytes.saturating_sub(*size);
             entry_count = entry_count.saturating_sub(1);
         }
@@ -4479,7 +4611,9 @@ async fn fetch_youtube_music_audio(video_id: String) -> Result<AudioPayload, Com
         video_id
     );
 
-    let client = reqwest::Client::new();
+    let client = http_client_builder().build().map_err(|error| CommandError {
+        message: format!("HTTP client creation failed: {error}"),
+    })?;
 
     // Mobile and TV clients are preferred because they are more likely to
     // return direct media URLs that do not require player-JavaScript deciphering.
@@ -4910,7 +5044,7 @@ async fn try_youtube_api(
     let audio_url_parsed = url::Url::parse(&audio_url).map_err(|error| CommandError {
         message: format!("audio URL parse failed: {error}"),
     })?;
-    let mut audio_client_builder = reqwest::Client::builder();
+    let mut audio_client_builder = http_client_builder();
     if let Some(local_address) = signed_googlevideo_local_address(&audio_url_parsed) {
         eprintln!(
             "[internal][tauri][info] fetch_youtube_music_audio forcing signed IP family attempt={} family={}",
@@ -5055,7 +5189,7 @@ async fn proxy_http_request(
         }
     })?;
 
-    let mut client_builder = reqwest::Client::builder()
+    let mut client_builder = http_client_builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36");
 
     if let Some(timeout_ms) = input.timeout_ms {
@@ -5331,6 +5465,7 @@ pub fn run() {
             if let Err(error) = build_tray(app.handle()) {
                 std::eprintln!("[internal][tauri][warn] tray unavailable: {error}");
             }
+            set_tray_visible(app.handle(), minimize_to_tray_enabled(app.handle()));
             Ok(())
         })
         .on_window_event(move |window, event| match event {
@@ -5404,6 +5539,8 @@ pub fn run() {
             offline_audio_has,
             offline_audio_remove,
             offline_audio_list,
+            offline_artwork_save,
+            offline_artwork,
             offline_audio_stats,
             offline_audio_prune,
             fetch_youtube_music_audio,
@@ -5485,6 +5622,27 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    // Replacing must not depend on deleting the old file first, or a failed save loses it (#155).
+    #[test]
+    fn write_json_file_replaces_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("zuno-write-json-{}", std::process::id()));
+        let path = dir.join("settings-v1.json");
+        assert!(super::write_json_file(&path, &HashMap::from([("minimize-to-tray", false)])).is_ok());
+        assert!(super::write_json_file(&path, &HashMap::from([("minimize-to-tray", true)])).is_ok());
+
+        let saved: HashMap<String, bool> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.get("minimize-to-tray"), Some(&true));
+        assert!(!path.with_extension("tmp").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Every request goes through this builder; a root reqwest refuses would break all of them (#143).
+    #[test]
+    fn http_client_builds_with_the_os_trust_store() {
+        assert!(super::http_client_builder().build().is_ok());
+    }
 
     /**
      * Which decoder a track is sent to.

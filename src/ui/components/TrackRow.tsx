@@ -16,6 +16,7 @@ import {
   removeDownload,
   useTrackDownloadProgress,
   useTrackOfflineStatus,
+  useUnavailableOffline,
 } from "../../player/offlineStore";
 import type { Track, TrackRating } from "../../datasource/types";
 import { libraryController, useLibraryState } from "../../player/playerStore";
@@ -415,6 +416,7 @@ export const TrackRow = memo(function TrackRow({
   /* Whether this list does multi-select at all. Browse and search rows do not pass a handler,
      and must keep their play-on-hover glyph rather than gain a checkbox that does nothing. */
   const canSelect = Boolean(onToggleSelected);
+  const unavailableOffline = useUnavailableOffline(track);
 
   return (
     <button
@@ -445,8 +447,10 @@ export const TrackRow = memo(function TrackRow({
         "[content-visibility:auto] [contain-intrinsic-size:auto_52px]",
         isCurrent && "bg-primary/5",
         isSelected && "bg-primary/10",
+        unavailableOffline && "opacity-40",
         className,
       )}
+      title={unavailableOffline ? "Not downloaded. Plays when you're back online." : buttonProps.title}
     >
       {children}
 

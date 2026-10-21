@@ -13,10 +13,9 @@ use windows::{
     },
     Media::{
         MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
-        SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
         SystemMediaTransportControlsTimelineProperties,
     },
-    Storage::Streams::RandomAccessStreamReference,
+    Storage::{StorageFile, Streams::RandomAccessStreamReference},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RPC_E_CHANGED_MODE, WPARAM},
         System::Com::{
@@ -71,7 +70,6 @@ struct NativeMediaSession {
     _pause_token: i64,
     _next_token: i64,
     _previous_token: i64,
-    _button_pressed_token: i64,
 }
 
 impl WindowsMediaSession {
@@ -188,27 +186,7 @@ impl NativeMediaSession {
             }))
             .map_err(|error| error.to_string())?;
 
-        let button_pressed_app = app.clone();
-        let button_pressed_token = controls
-            .ButtonPressed(&TypedEventHandler::<
-                SystemMediaTransportControls,
-                SystemMediaTransportControlsButtonPressedEventArgs,
-            >::new(move |_sender, args| {
-                let Some(args) = args.as_ref() else {
-                    return Ok(());
-                };
-                let action = match args.Button()? {
-                    SystemMediaTransportControlsButton::Next => Some("next"),
-                    SystemMediaTransportControlsButton::Previous => Some("previous"),
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    let _ = button_pressed_app.emit(MEDIA_CONTROL_EVENT, action);
-                }
-                Ok(())
-            }))
-            .map_err(|error| error.to_string())?;
-
+        // No ButtonPressed handler: Next/PreviousReceived already fire for it; both skipped twice (#136).
         let taskbar_toolbar = ThumbnailToolbar::new(&app).ok();
 
         Ok(Self {
@@ -221,7 +199,6 @@ impl NativeMediaSession {
             _pause_token: pause_token,
             _next_token: next_token,
             _previous_token: previous_token,
-            _button_pressed_token: button_pressed_token,
         })
     }
 
@@ -271,14 +248,10 @@ impl NativeMediaSession {
                 })
                 .map_err(|error| error.to_string())?;
 
-            if let Some(artwork_url) = metadata.artwork_url.as_ref() {
-                if let Ok(uri) = Uri::CreateUri(&HSTRING::from(artwork_url.as_str())) {
-                    if let Ok(thumbnail) = RandomAccessStreamReference::CreateFromUri(&uri) {
-                        updater
-                            .SetThumbnail(&thumbnail)
-                            .map_err(|error| error.to_string())?;
-                    }
-                }
+            if let Some(thumbnail) = metadata.artwork_url.as_deref().and_then(artwork_stream) {
+                updater
+                    .SetThumbnail(&thumbnail)
+                    .map_err(|error| error.to_string())?;
             }
         }
 
@@ -336,6 +309,15 @@ impl MediaMetadata {
             artwork_url: update.artwork_url.clone(),
         })
     }
+}
+
+/// A downloaded song's saved cover is a `file://` path; anything else is a URL the shell fetches.
+fn artwork_stream(url: &str) -> Option<RandomAccessStreamReference> {
+    if let Some(path) = url.strip_prefix("file://") {
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path)).ok()?.get().ok()?;
+        return RandomAccessStreamReference::CreateFromFile(&file).ok();
+    }
+    RandomAccessStreamReference::CreateFromUri(&Uri::CreateUri(&HSTRING::from(url)).ok()?).ok()
 }
 
 fn duration_to_timespan(seconds: f64) -> windows::Foundation::TimeSpan {
@@ -626,5 +608,9 @@ pub fn update_windows_media_session(
     state: tauri::State<'_, WindowsMediaSession>,
     update: MediaSessionUpdate,
 ) -> Result<(), String> {
+    let mut update = update;
+    if let Some(path) = update.artwork_url.as_deref().and_then(|url| crate::offline_artwork_file(&app, url)) {
+        update.artwork_url = Some(format!("file://{}", path.display()));
+    }
     state.with_session(&app, |session| session.update(update))
 }
