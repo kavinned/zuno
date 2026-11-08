@@ -69,3 +69,6 @@ outputs/*
 docs/*.txt
 docs/*.webp
 docs/zuno.PNG
+
+.superpowers
+.claude
