@@ -79,7 +79,9 @@ function SourceRow({
       <Switch
         checked={source.enabled}
         onCheckedChange={onToggle}
-        disabled={busy}
+        /* No stored URL means the keyring secret is gone: `updateSource` would probe and
+           replace hydrate's honest "Not usable" with a vague "Unreachable". */
+        disabled={busy || source.baseUrl === ""}
         aria-labelledby={labelId}
       />
 
@@ -181,13 +183,22 @@ export function AddonSourcesSettings() {
       return;
     }
     // Edit keeps the current URL when the field is left blank, so it is only required to add.
+    let normalizedUrl: string | null = null;
     if (editingId === null || nextUrl !== "") {
       try {
-        normalizeAddonBaseUrl(nextUrl);
+        normalizedUrl = normalizeAddonBaseUrl(nextUrl).baseUrl;
       } catch (caught) {
         setError(errorMessage(caught));
         return;
       }
+    }
+
+    if (
+      editingId === null
+      && sources.some((entry) => entry.baseUrl === normalizedUrl)
+    ) {
+      setError("This source is already added.");
+      return;
     }
 
     setSaving(true);
