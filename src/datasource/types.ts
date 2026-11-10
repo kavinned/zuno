@@ -1,5 +1,5 @@
 import type { AudioQuality } from "../internal/audioQuality";
-import type { ResolvedAddonStream } from "./addon/service";
+import type { AddonSubstitutionMatch, ResolvedAddonStream } from "./addon/service";
 import type { AddonTrackRef } from "./addon/types";
 
 export type TrackSource = "youtube" | "local" | "addon";
@@ -7,6 +7,15 @@ export type TrackSource = "youtube" | "local" | "addon";
 export interface ArtistReference {
   id: string;
   name: string;
+}
+
+export interface AddonSubstitutionInfo {
+  trackId: string;
+  format?: string;
+  sampleRateHz?: number;
+  bitDepth?: number;
+  kbps?: number;
+  lossless: boolean;
 }
 
 export interface Track {
@@ -34,6 +43,7 @@ export interface Track {
   isExplicit?: boolean;
   localPath?: string;
   addon?: AddonTrackRef;
+  addonSubstitution?: AddonSubstitutionInfo;
 }
 
 export interface LyricLine {
@@ -319,4 +329,8 @@ export interface AddonPlaybackSource {
     options?: { engine?: "rust" | "native" },
   ): Promise<ResolvedAddonStream>;
   allowDownloads(track: Track): boolean;
+  findLosslessMatch(
+    target: Track,
+    options?: { engine?: "rust" | "native"; budgetMs?: number },
+  ): Promise<AddonSubstitutionMatch | null>;
 }

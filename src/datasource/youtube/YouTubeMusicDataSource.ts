@@ -57,6 +57,7 @@ import { AuthExpiredError, DataSource, type StreamData } from "../DataSource";
 import type {
   AccountOption,
   AddonPlaybackSource,
+  AddonSubstitutionInfo,
   GoogleAccountOption,
   ArtistNotificationLevel,
   BrowseLink,
@@ -118,6 +119,7 @@ import {
 } from "./tauriFetch";
 import { parseVtt } from "./localVtt";
 import { isAddonTrackId } from "../addon/url";
+import type { AddonSubstitutionMatch } from "../addon/service";
 
 type ClientLabel = "music" | "web" | "download";
 type NativeAudioPayload = {
@@ -512,9 +514,43 @@ export class YouTubeMusicDataSource extends DataSource {
 
   private isEvaluatorInstalled = false;
 
-  constructor(addons?: AddonPlaybackSource) {
+  constructor(
+    addons?: AddonPlaybackSource,
+    private readonly streamingQuality: () => AudioQuality = getStreamingQuality,
+  ) {
     super();
     this.addons = addons;
+  }
+
+  /**
+   * Asks the addon sources for a verified lossless rendition of a YouTube track.
+   *
+   * Only at the lossless tier and only for YouTube tracks: an addon track is already served by
+   * its own source, and no other tier is asking for more than YouTube itself offers. Any failure
+   * is a miss, because substitution must never surface to the listener.
+   */
+  private async substituteLossless(
+    track: Track,
+    engine: "rust" | "native",
+  ): Promise<AddonSubstitutionMatch | null> {
+    if (track.source !== "youtube" || this.addons === undefined) return null;
+    if (this.streamingQuality() !== "lossless") return null;
+    try {
+      return await this.addons.findLosslessMatch(track, { engine, budgetMs: 2500 });
+    } catch {
+      return null;
+    }
+  }
+
+  private substitutionInfo(match: AddonSubstitutionMatch): AddonSubstitutionInfo {
+    return {
+      trackId: match.track.id,
+      format: match.track.addon?.format,
+      sampleRateHz: match.stream.sampleRateHz,
+      bitDepth: match.stream.bitDepth,
+      kbps: match.stream.kbps,
+      lossless: match.stream.lossless,
+    };
   }
 
   private async ensureYouTubeI(): Promise<typeof import("youtubei.js")> {
@@ -6551,6 +6587,35 @@ export class YouTubeMusicDataSource extends DataSource {
       return this.getNativeStreamData(track);
     }
 
+    const match = await this.substituteLossless(track, "native");
+    if (match) {
+      try {
+        const payload = await invoke<NativeAudioSourcePayload>("fetch_audio_source", {
+          url: match.stream.url,
+          trackId: track.id,
+          mimeType: match.stream.mimeType,
+          contentLength: match.stream.contentLength,
+          style: "addon",
+        });
+        if (payload.byteLength > 0) {
+          return {
+            mimeType: payload.mimeType,
+            sourceUrl: payload.url,
+            audioInfo: addonAudioInfo(match.stream),
+            addonSubstitution: this.substitutionInfo(match),
+          };
+        }
+        logInternalWarn("YouTubeMusicDataSource.getStreamData substitution empty", {
+          trackId: track.id,
+        });
+      } catch (error) {
+        logInternalWarn("YouTubeMusicDataSource.getStreamData substitution failed", {
+          trackId: track.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     const { url: streamUrl, mimeType: streamMimeType } = await this.resolveStreamUrl(track);
 
     logInternalInfo("YouTubeMusicDataSource.getStreamData download start", {
@@ -6630,6 +6695,22 @@ export class YouTubeMusicDataSource extends DataSource {
           style: "addon",
         },
         audioInfo: addonAudioInfo(stream),
+      };
+    }
+
+    const match = await this.substituteLossless(track, "rust");
+    if (match) {
+      return {
+        mimeType: match.stream.mimeType,
+        rustSource: {
+          kind: "stream",
+          url: match.stream.url,
+          mimeType: match.stream.mimeType,
+          contentLength: match.stream.contentLength,
+          style: "addon",
+        },
+        audioInfo: addonAudioInfo(match.stream),
+        addonSubstitution: this.substitutionInfo(match),
       };
     }
 

@@ -9,7 +9,7 @@ export {};
 
 import { YouTubeMusicDataSource } from "../youtube/YouTubeMusicDataSource";
 import type { AddonPlaybackSource, Track } from "../types";
-import type { ResolvedAddonStream } from "./service";
+import type { AddonSubstitutionMatch, ResolvedAddonStream } from "./service";
 
 function check(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -50,6 +50,7 @@ const fakeAddons: AddonPlaybackSource = {
     return resolved;
   },
   allowDownloads: () => true,
+  findLosslessMatch: async () => null,
 };
 
 const source = new YouTubeMusicDataSource(fakeAddons);
@@ -84,5 +85,72 @@ try {
   threw = true;
 }
 check(threw, "addon id without service throws, never falls through to YouTube");
+
+const youtubeTrack: Track = {
+  id: "dQw4w9WgXcQ",
+  source: "youtube",
+  title: 'Gehra Hua (From "Dhurandhar")',
+  artist: "Arijit Singh",
+  durationSec: 362,
+};
+
+resolved.sampleRateHz = 44100;
+resolved.bitDepth = 16;
+resolved.kbps = 1411;
+
+let substitutionCalls = 0;
+const substitutionMatch: AddonSubstitutionMatch = { track, stream: resolved };
+const substitutionAddons: AddonPlaybackSource = {
+  ...fakeAddons,
+  findLosslessMatch: async (target) => {
+    substitutionCalls += 1;
+    equal(target.id, youtubeTrack.id, "the substitution target is the YouTube track");
+    return substitutionMatch;
+  },
+};
+
+const losslessSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+losslessSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+const substituted = await losslessSource.getStreamData(youtubeTrack);
+check(substituted.rustSource?.kind === "stream", "the substituted stream is a Rust stream");
+equal(substituted.rustSource?.style, "addon", "the substituted stream uses the addon style");
+equal(substituted.rustSource?.url, resolved.url, "the addon URL is used");
+equal(substituted.addonSubstitution?.trackId, track.id, "the substitution is recorded");
+equal(substituted.addonSubstitution?.format, undefined, "no format is invented");
+equal(substituted.audioInfo?.sampleRateHz, 44100, "audio info is propagated");
+equal(substitutionCalls, 1, "substitution runs once");
+
+const highQualitySource = new YouTubeMusicDataSource(substitutionAddons, () => "high");
+highQualitySource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+const highQuality = await highQualitySource.getStreamData(youtubeTrack);
+check(highQuality.rustSource?.kind === "stream", "high quality resolves a YouTube stream");
+equal(substitutionCalls, 1, "a non-lossless tier does not ask the addon");
+equal(highQuality.rustSource?.url, "https://yt.example/audio", "YouTube is used at high quality");
+equal(highQuality.rustSource?.style, undefined, "the YouTube stream keeps the YouTube style");
+equal(highQuality.addonSubstitution, undefined, "no substitution is recorded");
+
+const noMatchSource = new YouTubeMusicDataSource(
+  { ...substitutionAddons, findLosslessMatch: async () => null },
+  () => "lossless",
+);
+noMatchSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+const noMatch = await noMatchSource.getStreamData(youtubeTrack);
+check(noMatch.rustSource?.kind === "stream", "a substitution miss resolves a YouTube stream");
+equal(noMatch.rustSource?.url, "https://yt.example/audio", "a miss falls back to YouTube");
+equal(noMatch.addonSubstitution, undefined, "a miss records no substitution");
+
+substitutionCalls = 0;
+const losslessAddonSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+await losslessAddonSource.getStreamData(track);
+equal(substitutionCalls, 0, "an addon track never substitutes");
 
 console.log("addon/routing: ok");
