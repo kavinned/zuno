@@ -137,7 +137,7 @@ const ATMOS_SETTING_KEY = "atmos";
 const TIER_BY_QUALITY: Record<AudioQuality, string> = {
   low: "LOW",
   normal: "HIGH",
-  high: "LOSSLESS",
+  high: "HIGH",
 };
 
 const TIER_SYNONYMS: Record<string, readonly string[]> = {

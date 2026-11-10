@@ -70,12 +70,14 @@ equal(JSON.stringify(addonQualityParams(quality, "high")), JSON.stringify([["qua
 equal(JSON.stringify(addonQualityParams(quality, "normal")), JSON.stringify([["quality", "high"]]), "normal maps to HIGH");
 equal(JSON.stringify(addonQualityParams(quality, "low")), JSON.stringify([["quality", "low"]]), "low maps to LOW");
 equal(JSON.stringify(addonQualityParams(null, "normal")), JSON.stringify([["quality", "HIGH"]]), "no manifest sends tier verbatim");
+equal(JSON.stringify(addonQualityParams(null, "high")), JSON.stringify([["quality", "HIGH"]]), "no manifest high sends HIGH");
 
 const defaults = parseManifest({
   id: "x",
   settings: [
-    { key: "quality", default: "lossless", options: [{ value: "flac" }, { value: "mp3" }] },
+    { key: "quality", default: "lossless", options: [{ value: "atmos" }, { value: "flac" }, { value: "mp3" }] },
     { key: "region", default: "us" },
+    { key: "atmos", default: "true" },
   ],
 });
 equal(JSON.stringify(addonQualityParams(defaults, "high")), JSON.stringify([["quality", "flac"], ["region", "us"]]), "unknown tier falls back to first option and preserves other defaults");
