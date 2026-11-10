@@ -3,8 +3,6 @@ import { shallowEqual, usePlayerSelector } from "../../../player/playerStore";
 import { playerController } from "../../../player/playerStore";
 import { playerUIStore, usePlayerUIState } from "../../stores/playerUIStore";
 import { formatMinutesSeconds } from "@/lib/utils";
-import { AddonBadge } from "../TrackRow";
-import { formatAddonAudioInfo } from "./audioInfoText";
 
 /*
  * Deliberately NOT beUI's RangeSlider: that component snaps to discrete steps, while
@@ -243,9 +241,6 @@ export function SeekBar() {
   };
 
   const isDisabled = !state.currentTrack || state.status === "loading";
-  const audioInfoText = state.currentTrack?.source === "addon"
-    ? formatAddonAudioInfo(state.currentTrack.addon ?? {})
-    : "";
 
   return (
     <div className="group/seek flex w-full items-center gap-2.5">
@@ -274,12 +269,6 @@ export function SeekBar() {
       <span className="min-w-10 shrink-0 text-xs tabular-nums text-muted-foreground">
         {formatTime(duration)}
       </span>
-      {audioInfoText !== "" && (
-        <span className="shrink-0 text-xs text-muted-foreground">{audioInfoText}</span>
-      )}
-      {state.currentTrack?.source === "addon" && (
-        <AddonBadge format={state.currentTrack.addon?.format} />
-      )}
     </div>
   );
 }

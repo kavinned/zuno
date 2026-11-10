@@ -20,6 +20,8 @@ import {
 import { usePlayerUIState } from "../../stores/playerUIStore";
 import { TrackArtwork } from "../TrackArtwork";
 import { ArtistLinks } from "../ArtistLinks";
+import { AddonBadge } from "../TrackRow";
+import { formatAddonAudioInfo } from "./audioInfoText";
 import { useTrackContextMenu } from "../TrackContextMenu";
 import { FloatingPanel } from "../FloatingPanel";
 import {
@@ -189,6 +191,10 @@ export function TrackInfo() {
     (libraryState.status === "restoring" || libraryState.status === "loading")
     && !libraryState.library;
   const canLikeCurrentTrack = currentTrack.source === "youtube";
+  const isAddonTrack = currentTrack.source === "addon";
+  const audioInfoText = isAddonTrack
+    ? formatAddonAudioInfo(currentTrack.addon ?? {})
+    : "";
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -285,6 +291,14 @@ export function TrackInfo() {
             interactive={currentTrack.source !== "addon"}
           />
         </div>
+        {isAddonTrack && (
+          <div className="flex items-center gap-1.5">
+            {audioInfoText !== "" && (
+              <span className="text-[10px] text-muted-foreground">{audioInfoText}</span>
+            )}
+            <AddonBadge format={currentTrack.addon?.format} />
+          </div>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
