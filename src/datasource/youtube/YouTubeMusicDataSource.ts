@@ -6608,6 +6608,7 @@ export class YouTubeMusicDataSource extends DataSource {
             sourceUrl: payload.url,
             audioInfo: addonAudioInfo(match.stream),
             addonSubstitution: this.substitutionInfo(match),
+            addonStats: match.stream.stats,
           };
         }
         logInternalWarn("YouTubeMusicDataSource.getStreamData substitution empty", {
@@ -6718,6 +6719,7 @@ export class YouTubeMusicDataSource extends DataSource {
         },
         audioInfo: addonAudioInfo(match.stream),
         addonSubstitution: this.substitutionInfo(match),
+        addonStats: match.stream.stats,
       };
     }
 

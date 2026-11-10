@@ -1275,7 +1275,12 @@ export class PlayerController {
           this.pendingSeekTime = null;
           // The deck already holds these bytes, so the slot is stale rather than useful.
           const warmed = this.claimWarmedStream(track.id);
-          this.applyAddonPlaybackInfo(track.id, warmed?.audioInfo, warmed?.addonSubstitution);
+          this.applyAddonPlaybackInfo(
+            track.id,
+            warmed?.audioInfo,
+            warmed?.addonSubstitution,
+            warmed?.addonStats,
+          );
           logInternalInfo("PlayerController.ensureTrackLoaded preloaded deck", {
             trackId: track.id,
             crossfadeSec: this.crossfadeSec,
@@ -1398,6 +1403,7 @@ export class PlayerController {
 
       let audioInfo: StreamData["audioInfo"] = undefined;
       let addonSubstitution: StreamData["addonSubstitution"] = undefined;
+      let addonStats: StreamData["addonStats"] = undefined;
       try {
         const audioData = useNativeAudio
           ? warmed ?? await this.dataSource.getStreamData?.(track)
@@ -1407,6 +1413,7 @@ export class PlayerController {
         }
         audioInfo = audioData?.audioInfo;
         addonSubstitution = audioData?.addonSubstitution;
+        addonStats = audioData?.addonStats;
 
         if (addonNativeOnly && audioData) {
           await this.audioEngine.loadNativeFallback(
@@ -1451,6 +1458,7 @@ export class PlayerController {
           if (!nativeAudioData) throw error;
           audioInfo = nativeAudioData.audioInfo;
           addonSubstitution = nativeAudioData.addonSubstitution;
+          addonStats = nativeAudioData.addonStats;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1467,6 +1475,7 @@ export class PlayerController {
           /* The addon load failed; the IFrame plays YouTube, so no verified addon format remains. */
           audioInfo = undefined;
           addonSubstitution = undefined;
+          addonStats = undefined;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to the YouTube player", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1477,6 +1486,7 @@ export class PlayerController {
           if (!nativeAudioData) throw error;
           audioInfo = nativeAudioData.audioInfo;
           addonSubstitution = nativeAudioData.addonSubstitution;
+          addonStats = nativeAudioData.addonStats;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1495,7 +1505,7 @@ export class PlayerController {
       }
 
       this.loadedTrackId = track.id;
-      this.applyAddonPlaybackInfo(track.id, audioInfo, addonSubstitution);
+      this.applyAddonPlaybackInfo(track.id, audioInfo, addonSubstitution, addonStats);
       if (this.pendingSeekTime !== null) {
         this.audioEngine.seekTo(this.pendingSeekTime);
         this.pendingSeekTime = null;
@@ -1544,6 +1554,7 @@ export class PlayerController {
     trackId: string,
     audioInfo: StreamData["audioInfo"],
     addonSubstitution: StreamData["addonSubstitution"],
+    addonStats?: StreamData["addonStats"],
   ): void {
     const current = this.state.currentTrack;
     if (current?.id !== trackId) return;
@@ -1564,6 +1575,22 @@ export class PlayerController {
       }
     }
     if (next !== current) this.setState({ currentTrack: next });
+
+    if (addonStats !== undefined) {
+      void addonStats
+        .then((stats) => {
+          if (stats === undefined) return;
+          const shown = this.state.currentTrack;
+          if (shown?.id !== trackId || shown.addonSubstitution === undefined) return;
+          this.applyAddonPlaybackInfo(trackId, undefined, {
+            ...shown.addonSubstitution,
+            ...stats,
+          });
+        })
+        .catch(() => {
+          /* Format details are optional; the stream is already playing. */
+        });
+    }
   }
 
   private async playLoadedTrack(): Promise<boolean> {

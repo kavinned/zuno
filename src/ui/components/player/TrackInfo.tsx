@@ -69,6 +69,7 @@ export function TrackInfo() {
     isIn: boolean;
   } | null>(null);
   const [isDefaultMenuOpen, setIsDefaultMenuOpen] = useState(false);
+  const [isAddonInfoOpen, setIsAddonInfoOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddingToPlaylist, setIsAddingToPlaylist] = useState(false);
   const [checkingTrackId, setCheckingTrackId] = useState<string | null>(null);
@@ -194,11 +195,15 @@ export function TrackInfo() {
   const isAddonTrack = currentTrack.source === "addon";
   const substitution = currentTrack.addonSubstitution;
   const showAudioDetails = isAddonTrack || substitution !== undefined;
-  const audioInfoText = isAddonTrack
-    ? formatAddonAudioInfo(currentTrack.addon ?? {})
-    : substitution !== undefined
-      ? formatAddonAudioInfo(substitution)
-      : "";
+  const audioInfo = isAddonTrack
+    ? {
+        sampleRateHz: currentTrack.addon?.sampleRateHz,
+        bitDepth: currentTrack.addon?.bitDepth,
+        kbps: currentTrack.addon?.kbps,
+      }
+    : substitution;
+  const audioInfoText = formatAddonAudioInfo(audioInfo ?? {});
+  const addonFormat = isAddonTrack ? currentTrack.addon?.format : substitution?.format;
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -297,11 +302,32 @@ export function TrackInfo() {
         </div>
         {showAudioDetails && (
           <div className="flex items-center gap-1.5">
-            {audioInfoText !== "" && (
-              <span className="text-[10px] text-muted-foreground">{audioInfoText}</span>
-            )}
-            {isAddonTrack && <AddonBadge format={currentTrack.addon?.format} />}
-            {substitution !== undefined && <AddonBadge format={substitution.format} />}
+            <FloatingPanel
+              open={isAddonInfoOpen}
+              onOpenChange={setIsAddonInfoOpen}
+              openOnHover
+              side="top"
+              triggerClassName="inline-flex"
+              className="w-56 p-3"
+              trigger={(
+                <AddonBadge
+                  format={addonFormat}
+                  lossless={substitution?.lossless}
+                />
+              )}
+            >
+              <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Addon stream
+                </span>
+                <span className="text-xs text-foreground">
+                  {audioInfoText !== "" ? audioInfoText : "Format details unavailable"}
+                </span>
+                {addonFormat !== undefined && (
+                  <span className="text-[10px] uppercase text-muted-foreground">{addonFormat}</span>
+                )}
+              </div>
+            </FloatingPanel>
           </div>
         )}
       </div>

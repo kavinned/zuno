@@ -324,11 +324,24 @@ function ExplicitBadge() {
  * pushing the stamp out of the row. The format is shown when the addon reported one, since
  * "FLAC" is the fact that explains why the row is here at all.
  */
-export function AddonBadge({ format }: { format?: string }) {
+const LOSSLESS_FORMAT = /^(?:flac|alac|wav|aiff|pcm)$/i;
+
+export function AddonBadge({
+  format,
+  lossless = false,
+}: {
+  format?: string;
+  lossless?: boolean;
+}) {
+  const filled = lossless || LOSSLESS_FORMAT.test(format ?? "");
   return (
     <span
-      title={format ? `Addon · ${format}` : "From an addon source"}
-      className="shrink-0 rounded-[3px] border border-border px-1 text-[10px] font-medium uppercase leading-[15px] text-muted-foreground"
+      className={cn(
+        "shrink-0 rounded-[3px] border px-1 text-[10px] font-medium uppercase leading-[15px]",
+        filled
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border text-muted-foreground",
+      )}
     >
       {format || "Addon"}
     </span>
