@@ -192,9 +192,13 @@ export function TrackInfo() {
     && !libraryState.library;
   const canLikeCurrentTrack = currentTrack.source === "youtube";
   const isAddonTrack = currentTrack.source === "addon";
+  const substitution = currentTrack.addonSubstitution;
+  const showAudioDetails = isAddonTrack || substitution !== undefined;
   const audioInfoText = isAddonTrack
     ? formatAddonAudioInfo(currentTrack.addon ?? {})
-    : "";
+    : substitution !== undefined
+      ? formatAddonAudioInfo(substitution)
+      : "";
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -291,12 +295,13 @@ export function TrackInfo() {
             interactive={currentTrack.source !== "addon"}
           />
         </div>
-        {isAddonTrack && (
+        {showAudioDetails && (
           <div className="flex items-center gap-1.5">
             {audioInfoText !== "" && (
               <span className="text-[10px] text-muted-foreground">{audioInfoText}</span>
             )}
-            <AddonBadge format={currentTrack.addon?.format} />
+            {isAddonTrack && <AddonBadge format={currentTrack.addon?.format} />}
+            {substitution !== undefined && <AddonBadge format={substitution.format} />}
           </div>
         )}
       </div>
