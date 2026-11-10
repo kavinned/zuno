@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3160,20 +3160,98 @@ fn parse_media_range(range_header: Option<&str>, total_len: usize) -> Option<(&'
     (start <= end && start < total_len).then_some(("206 Partial Content", start, end))
 }
 
+/**
+ * Which provider a media URL came from.
+ *
+ * The two speak different dialects: googlevideo takes its byte range in the query string and
+ * refuses a Range header, while an addon's media server expects the standard header. Everything
+ * else about a transfer — logging, length discovery, response status handling — follows from
+ * this, so it is threaded alongside the URL instead of being inferred from the host.
+ */
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum MediaRequestStyle {
+    #[default]
+    Youtube,
+    Addon,
+}
+
+fn range_header_value(start: u64, end: u64) -> String {
+    format!("bytes={start}-{end}")
+}
+
+fn expected_range_len(start: u64, end: u64) -> u64 {
+    end.saturating_sub(start) + 1
+}
+
+/// A media URL in the only form that may reach a log line.
+fn redact_media_url(style: MediaRequestStyle, url: &str) -> String {
+    if style == MediaRequestStyle::Addon {
+        return addon::redacted_url(url);
+    }
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return "<invalid media URL>".to_string();
+    };
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
+}
+
+/// The total byte length a transfer may rely on: the signed `clen` for YouTube, the resolved
+/// length for an addon (falling back to `clen` when its resolver supplied one).
+fn total_media_length(
+    style: MediaRequestStyle,
+    request_url: &url::Url,
+    content_length: Option<u64>,
+) -> u64 {
+    match style {
+        MediaRequestStyle::Youtube => signed_content_length(request_url).unwrap_or(0),
+        MediaRequestStyle::Addon => content_length
+            .or_else(|| signed_content_length(request_url))
+            .unwrap_or(0),
+    }
+}
+
+fn validate_media_url(style: MediaRequestStyle, raw: &str) -> Result<url::Url, CommandError> {
+    match style {
+        MediaRequestStyle::Youtube => url::Url::parse(raw)
+            .map_err(|error| cache_error(format!("audio URL parse failed: {error}"))),
+        MediaRequestStyle::Addon => addon::validate_http_url(raw).map_err(cache_error),
+    }
+}
+
+/// An addon media request: the range in the standard header, no browser identity and no cookie.
+fn addon_media_request(
+    client: &reqwest::Client,
+    url: &str,
+    range: Option<(u64, u64)>,
+) -> reqwest::RequestBuilder {
+    let request = client
+        .get(url)
+        .header("Accept", "*/*")
+        .header("Accept-Encoding", "identity");
+    match range {
+        Some((start, end)) => request.header("Range", range_header_value(start, end)),
+        None => request,
+    }
+}
+
 #[tauri::command]
 async fn fetch_audio_bytes(
     url: String,
     track_id: String,
     cookie: Option<String>,
+    style: Option<MediaRequestStyle>,
+    content_length: Option<u64>,
 ) -> Result<Vec<u8>, CommandError> {
+    let style = style.unwrap_or_default();
     let started_at = Instant::now();
+    let log_url = redact_media_url(style, &url);
     eprintln!(
-        "[internal][tauri][info] fetch_audio_bytes start url={} track_id={}",
-        url, track_id
+        "[internal][tauri][info] fetch_audio_bytes start url={} track_id={} declared_length={:?}",
+        log_url, track_id, content_length
     );
-    let request_url = url::Url::parse(&url).map_err(|error| CommandError {
-        message: format!("audio URL parse failed: {error}"),
-    })?;
+    let request_url = validate_media_url(style, &url)?;
     let mut client_builder = http_client_builder();
     if let Some(local_address) = signed_googlevideo_local_address(&request_url) {
         eprintln!(
@@ -3186,29 +3264,38 @@ async fn fetch_audio_bytes(
         message: format!("audio HTTP client creation failed: {error}"),
     })?;
     /*
-     * The whole file in one request, asked for the way the browser asks: `range=0-{clen-1}` in
-     * the query string. When `clen` is absent there is nothing to bound the request with, so it
-     * goes out plain — still without a Range header, which is what gets these refused.
+     * YouTube gets the whole file in one request, asked for the way the browser asks:
+     * `range=0-{clen-1}` in the query string. When `clen` is absent there is nothing to bound
+     * the request with, so it goes out plain — still without a Range header, which is what gets
+     * these refused. An addon server gets a plain GET: no Range, because this is the whole body.
      */
-    let ranged_url = match signed_content_length(&request_url) {
-        Some(total) if total > 0 => audio_url_with_range(&url, 0, total - 1),
-        _ => url.clone(),
+    let ranged_url = match style {
+        MediaRequestStyle::Youtube => match signed_content_length(&request_url) {
+            Some(total) if total > 0 => audio_url_with_range(&url, 0, total - 1),
+            _ => url.clone(),
+        },
+        MediaRequestStyle::Addon => url.clone(),
     };
-    let response = send_audio_request(&client, &ranged_url, cookie.as_deref(), &track_id).await?;
+    let response =
+        send_audio_request(&client, &ranged_url, cookie.as_deref(), &track_id, style).await?;
 
     let body = response.bytes().await.map_err(|error| {
+        let error_message = match style {
+            MediaRequestStyle::Addon => error.without_url().to_string(),
+            MediaRequestStyle::Youtube => error.to_string(),
+        };
         eprintln!(
             "[internal][tauri][error] fetch_audio_bytes body read failed url={} error={}",
-            url, error
+            log_url, error_message
         );
         CommandError {
-            message: format!("read body failed: {error}"),
+            message: format!("read body failed: {error_message}"),
         }
     })?;
 
     eprintln!(
         "[internal][tauri][info] fetch_audio_bytes success url={} bytes={} duration_ms={}",
-        url,
+        log_url,
         body.len(),
         started_at.elapsed().as_millis()
     );
@@ -3442,15 +3529,34 @@ async fn send_audio_request(
     url: &str,
     cookie: Option<&str>,
     track_id: &str,
+    style: MediaRequestStyle,
 ) -> Result<reqwest::Response, CommandError> {
     let started_at = Instant::now();
-    let response = googlevideo_audio_request(client, url, cookie)
-        .send()
-        .await
-        .map_err(|error| cache_error(format!("audio request failed: {error}")))?;
+    let request = match style {
+        MediaRequestStyle::Youtube => googlevideo_audio_request(client, url, cookie),
+        MediaRequestStyle::Addon => addon_media_request(client, url, None),
+    };
+    let response = request.send().await.map_err(|error| match style {
+        MediaRequestStyle::Addon => {
+            cache_error(format!("audio request failed: {}", error.without_url()))
+        }
+        MediaRequestStyle::Youtube => cache_error(format!("audio request failed: {error}")),
+    })?;
 
     if response.status().is_success() {
         return Ok(response);
+    }
+
+    let status = response.status();
+    if style == MediaRequestStyle::Addon {
+        eprintln!(
+            "[internal][tauri][warn] addon media refused url={} track_id={} status={} duration_ms={}",
+            redact_media_url(style, url),
+            track_id,
+            status,
+            started_at.elapsed().as_millis()
+        );
+        return Err(cache_error(format!("request returned {status}")));
     }
 
     /*
@@ -3462,7 +3568,6 @@ async fn send_audio_request(
         .iter()
         .map(|(name, value)| format!("{name}={}", value.to_str().unwrap_or("?")))
         .collect();
-    let status = response.status();
     eprintln!(
         "[internal][tauri][warn] googlevideo refused track_id={} status={} duration_ms={} headers=[{}]",
         track_id,
@@ -3511,9 +3616,11 @@ async fn offline_audio_save(
     url: String,
     track_id: String,
     cookie: Option<String>,
+    style: Option<MediaRequestStyle>,
+    content_length: Option<u64>,
 ) -> Result<u64, CommandError> {
-    let request_url = url::Url::parse(&url)
-        .map_err(|error| cache_error(format!("audio URL parse failed: {error}")))?;
+    let style = style.unwrap_or_default();
+    let request_url = validate_media_url(style, &url)?;
     let started_at = Instant::now();
 
     /*
@@ -3521,20 +3628,27 @@ async fn offline_audio_save(
      * correlatable only by their position in the file, which made a ladder of attempts across
      * several tracks genuinely hard to read.
      *
-     * The URL is passed raw: the eprintln! macro sanitizes every line on its way out, so
-     * pre-sanitizing here would redact the redaction and report the length of "[105ch]" rather
-     * than of the signature.
+     * The URL is redacted before it is added to the line: `redact_media_url` is the only form of
+     * it that may be logged, whatever the provider.
      */
     eprintln!(
         "[internal][tauri][info] offline_audio_save request track_id={} url={}",
-        track_id, url
+        track_id,
+        redact_media_url(style, &url)
     );
 
-    let total_bytes = signed_content_length(&request_url).unwrap_or(0);
+    let total_bytes = total_media_length(style, &request_url, content_length);
     let mut last_percent: u8 = 0;
-    let bytes = fetch_audio_ranged(&url, &track_id, cookie.as_deref(), |received, total| {
-        emit_offline_progress(&app, &track_id, received, total, &mut last_percent);
-    })
+    let bytes = fetch_audio_ranged(
+        &url,
+        &track_id,
+        cookie.as_deref(),
+        Some(style),
+        content_length,
+        |received, total| {
+            emit_offline_progress(&app, &track_id, received, total, &mut last_percent);
+        },
+    )
     .await?;
 
     if bytes.is_empty() {
@@ -3565,27 +3679,32 @@ async fn fetch_audio_ranged(
     url: &str,
     track_id: &str,
     cookie: Option<&str>,
+    style: Option<MediaRequestStyle>,
+    content_length: Option<u64>,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<Vec<u8>, CommandError> {
     use futures_util::stream::StreamExt;
 
-    let request_url = url::Url::parse(url)
-        .map_err(|error| cache_error(format!("audio URL parse failed: {error}")))?;
+    let style = style.unwrap_or_default();
+    let request_url = validate_media_url(style, url)?;
 
     /*
-     * `clen` rather than a probe request. A `range=` query is answered with 200 and just that
-     * slice — there is no 206 and no Content-Range — so the response cannot report the total
+     * YouTube reads `clen` rather than probing. A `range=` query is answered with 200 and just
+     * that slice — there is no 206 and no Content-Range — so the response cannot report the total
      * size. The URL states the length itself, and it is covered by the signature, so it cannot
-     * disagree with the file.
+     * disagree with the file. An addon's length comes from its resolve, with `clen` only as a
+     * fallback for providers that sign one.
      */
-    let total_bytes = signed_content_length(&request_url).unwrap_or(0);
+    let total_bytes = total_media_length(style, &request_url, content_length);
 
-    // Small enough for one request, or `clen` was absent and there is nothing to chunk by.
+    // Small enough for one request, or the length is unknown and there is nothing to chunk by.
     if total_bytes <= AUDIO_MIN_CHUNK_BYTES {
         let whole = fetch_audio_bytes(
             url.to_string(),
             track_id.to_string(),
             cookie.map(str::to_string),
+            Some(style),
+            content_length,
         )
         .await?;
         let received = whole.len() as u64;
@@ -3606,30 +3725,63 @@ async fn fetch_audio_ranged(
 
     let mut chunks: Vec<(u64, Vec<u8>)> = Vec::with_capacity(ranges.len());
     let mut received = 0u64;
-    let mut stream = futures_util::stream::iter(ranges.into_iter().map(|(start, end)| {
-        let client = client.clone();
-        let url = url.to_string();
-        let cookie = cookie.map(str::to_string);
-        async move {
-            let response = googlevideo_audio_request(
-                &client,
-                &audio_url_with_range(&url, start, end),
-                cookie.as_deref(),
-            )
-            .send()
-            .await
-            .map_err(|error| cache_error(format!("audio range request failed: {error}")))?;
-            if !response.status().is_success() {
-                return Err(cache_error(format!("range returned {}", response.status())));
-            }
-            let body = response
-                .bytes()
+    let mut stream =
+        futures_util::stream::iter(ranges.into_iter().map(|(start, end)| {
+            let client = client.clone();
+            let url = url.to_string();
+            let cookie = cookie.map(str::to_string);
+            async move {
+                if style == MediaRequestStyle::Addon {
+                    let response = addon_media_request(&client, &url, Some((start, end)))
+                        .send()
+                        .await
+                        .map_err(|error| {
+                            cache_error(format!(
+                                "audio range request failed: {}",
+                                error.without_url()
+                            ))
+                        })?;
+                    match response.status().as_u16() {
+                        // The server ignored Range. Every chunk would be the whole body, so
+                        // abandon the assembly and let the caller fetch it once.
+                        200 => return Err(cache_error("range ignored by server")),
+                        206 => {}
+                        status => {
+                            return Err(cache_error(format!("range returned {status}")));
+                        }
+                    }
+                    let body = response.bytes().await.map_err(|error| {
+                        cache_error(format!("audio range read failed: {}", error.without_url()))
+                    })?;
+                    let expected = expected_range_len(start, end);
+                    if body.len() as u64 != expected {
+                        return Err(cache_error(format!(
+                            "range length mismatch: {} of {expected} bytes",
+                            body.len()
+                        )));
+                    }
+                    return Ok::<(u64, Vec<u8>), CommandError>((start, body.to_vec()));
+                }
+
+                let response = googlevideo_audio_request(
+                    &client,
+                    &audio_url_with_range(&url, start, end),
+                    cookie.as_deref(),
+                )
+                .send()
                 .await
-                .map_err(|error| cache_error(format!("audio range read failed: {error}")))?;
-            Ok::<(u64, Vec<u8>), CommandError>((start, body.to_vec()))
-        }
-    }))
-    .buffer_unordered(OFFLINE_CHUNK_CONCURRENCY);
+                .map_err(|error| cache_error(format!("audio range request failed: {error}")))?;
+                if !response.status().is_success() {
+                    return Err(cache_error(format!("range returned {}", response.status())));
+                }
+                let body = response
+                    .bytes()
+                    .await
+                    .map_err(|error| cache_error(format!("audio range read failed: {error}")))?;
+                Ok::<(u64, Vec<u8>), CommandError>((start, body.to_vec()))
+            }
+        }))
+        .buffer_unordered(OFFLINE_CHUNK_CONCURRENCY);
 
     let mut chunk_error: Option<CommandError> = None;
     while let Some(result) = stream.next().await {
@@ -3658,6 +3810,8 @@ async fn fetch_audio_ranged(
             url.to_string(),
             track_id.to_string(),
             cookie.map(str::to_string),
+            Some(style),
+            content_length,
         )
         .await;
     }
@@ -3894,19 +4048,29 @@ async fn fetch_audio_source(
     track_id: String,
     mime_type: String,
     cookie: Option<String>,
+    style: Option<MediaRequestStyle>,
+    content_length: Option<u64>,
 ) -> Result<AudioSourcePayload, CommandError> {
-    let request_url = url::Url::parse(&url)
-        .map_err(|error| cache_error(format!("audio URL parse failed: {error}")))?;
-    let total = signed_content_length(&request_url).unwrap_or(0) as usize;
+    let style = style.unwrap_or_default();
+    let request_url = validate_media_url(style, &url)?;
+    let total = total_media_length(style, &request_url, content_length) as usize;
     let server = media_server()?;
     let key = format!("stream-{track_id}");
 
     /*
-     * Too small to stream progressively, or no `clen` to plan a fill with. Downloading it whole
+     * Too small to stream progressively, or no length to plan a fill with. Downloading it whole
      * costs one request either way, and the caller gets a body that is already complete.
      */
     if total <= AUDIO_MIN_CHUNK_BYTES as usize {
-        let bytes = fetch_audio_ranged(&url, &track_id, cookie.as_deref(), |_, _| {}).await?;
+        let bytes = fetch_audio_ranged(
+            &url,
+            &track_id,
+            cookie.as_deref(),
+            Some(style),
+            content_length,
+            |_, _| {},
+        )
+        .await?;
         verify_audio_container(&bytes, &mime_type)?;
         let byte_length = bytes.len();
         store_media_item(&server.items, key.clone(), bytes, mime_type.clone())?;
@@ -3938,6 +4102,8 @@ async fn fetch_audio_source(
         buffer,
         ranges,
         None,
+        Some(style),
+        content_length,
     ));
 
     Ok(AudioSourcePayload {
@@ -4001,9 +4167,12 @@ async fn fill_media_buffer(
     buffer: Arc<Mutex<MediaBuffer>>,
     ranges: Vec<(usize, usize)>,
     slot: Option<(usize, u64)>,
+    style: Option<MediaRequestStyle>,
+    content_length: Option<u64>,
 ) {
     use futures_util::stream::StreamExt;
 
+    let style = style.unwrap_or_default();
     let fail = |buffer: &Arc<Mutex<MediaBuffer>>| {
         if let Ok(mut guard) = buffer.lock() {
             guard.failed = true;
@@ -4036,7 +4205,7 @@ async fn fill_media_buffer(
         return;
     }
 
-    let Ok(request_url) = url::Url::parse(&url) else {
+    let Ok(request_url) = validate_media_url(style, &url) else {
         fail(&buffer);
         return;
     };
@@ -4074,7 +4243,6 @@ async fn fill_media_buffer(
                  * the assembly on the first one sent every such track down the whole-file
                  * path, which can be refused in turn and then the play simply fails.
                  */
-                let ranged = audio_url_with_range(&url, start as u64, end as u64);
                 let mut backoff = PLAYBACK_RETRY_BACKOFF;
                 let mut last: CommandError = cache_error("range never attempted");
 
@@ -4088,10 +4256,57 @@ async fn fill_media_buffer(
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
                     }
-                    match googlevideo_audio_request(&client, &ranged, cookie.as_deref())
-                        .send()
-                        .await
-                    {
+                    let request = match style {
+                        MediaRequestStyle::Youtube => googlevideo_audio_request(
+                            &client,
+                            &audio_url_with_range(&url, start as u64, end as u64),
+                            cookie.as_deref(),
+                        ),
+                        MediaRequestStyle::Addon => addon_media_request(
+                            &client,
+                            &url,
+                            Some((start as u64, end as u64)),
+                        ),
+                    };
+                    match request.send().await {
+                        Ok(response) if style == MediaRequestStyle::Addon => {
+                            match response.status().as_u16() {
+                                /*
+                                 * The server ignored Range and answered with the whole body.
+                                 * Splicing that in as this chunk would corrupt the file; fetch
+                                 * it once instead. Not retried: the answer will not change.
+                                 */
+                                200 => {
+                                    return Err((
+                                        index,
+                                        cache_error("range ignored by server"),
+                                    ));
+                                }
+                                206 => {}
+                                status => {
+                                    last = cache_error(format!("range returned {status}"));
+                                    continue;
+                                }
+                            }
+                            match response.bytes().await {
+                                Ok(body) => {
+                                    let expected = expected_range_len(start as u64, end as u64);
+                                    if body.len() as u64 == expected {
+                                        return Ok((index, body.to_vec()));
+                                    }
+                                    last = cache_error(format!(
+                                        "range length mismatch: {} of {expected} bytes",
+                                        body.len()
+                                    ));
+                                }
+                                Err(error) => {
+                                    last = cache_error(format!(
+                                        "audio range read failed: {}",
+                                        error.without_url()
+                                    ));
+                                }
+                            }
+                        }
                         Ok(response) if response.status().is_success() => {
                             match response.bytes().await {
                                 Ok(body) => return Ok((index, body.to_vec())),
@@ -4111,7 +4326,15 @@ async fn fill_media_buffer(
                             last = cache_error(format!("range returned {status}{reason}"));
                         }
                         Err(error) => {
-                            last = cache_error(format!("audio range request failed: {error}"));
+                            last = match style {
+                                MediaRequestStyle::Addon => cache_error(format!(
+                                    "audio range request failed: {}",
+                                    error.without_url()
+                                )),
+                                MediaRequestStyle::Youtube => {
+                                    cache_error(format!("audio range request failed: {error}"))
+                                }
+                            };
                         }
                     }
                 }
@@ -4176,7 +4399,15 @@ async fn fill_media_buffer(
                     index, error.message, track_id
                 );
                 drop(stream);
-                match fetch_audio_bytes(url.clone(), track_id.clone(), cookie.clone()).await {
+                match fetch_audio_bytes(
+                    url.clone(),
+                    track_id.clone(),
+                    cookie.clone(),
+                    Some(style),
+                    content_length,
+                )
+                .await
+                {
                     Ok(whole) if !whole.is_empty() => {
                         if verify_audio_container(&whole, &mime_type).is_err() {
                             fail(&buffer);
@@ -4222,6 +4453,11 @@ enum NativeAudioSource {
         url: String,
         mime_type: String,
         cookie: Option<String>,
+        /// The length the addon resolved for this stream; YouTube keeps using the URL's `clen`.
+        #[serde(default)]
+        content_length: Option<u64>,
+        #[serde(default)]
+        style: Option<MediaRequestStyle>,
     },
     /// A track already in the offline store.
     #[serde(rename_all = "camelCase")]
@@ -4234,18 +4470,20 @@ enum NativeAudioSource {
 /**
  * Opens a source as a blocking reader.
  *
- * The streaming case is the interesting one: it publishes an empty buffer sized from the URL's
- * own `clen`, starts the same ranged fill the media server uses, and returns a reader over it
- * straight away. The decoder then reads the container header out of the head chunk while the
- * rest is still arriving — which is the whole difference from the `<audio>` path, where the
- * body had to be published before an element could be pointed at it.
+ * The streaming case is the interesting one: it publishes an empty buffer sized from the
+ * stream's declared length — the addon's `contentLength` first, then the URL's own `clen` —
+ * starts the same ranged fill the media server uses, and returns a reader over it straight
+ * away. The decoder then reads the container header out of the head chunk while the rest is
+ * still arriving — which is the whole difference from the `<audio>` path, where the body had to
+ * be published before an element could be pointed at it. An addon stream with no declared
+ * length is fetched whole into a temp file instead, since there is no buffer size to publish.
  *
  * `standby` picks the load slot for `LOAD_GENERATION`: this load's fill becomes the one worth
  * waiting for in its slot, and whatever fill was previously running there — a track that has
  * since died, been skipped, or already played out — is now free to abandon instead of running
  * its retries and fallback to completion.
  */
-fn open_native_audio_reader(
+async fn open_native_audio_reader(
     app: &tauri::AppHandle,
     track_id: &str,
     source: NativeAudioSource,
@@ -4256,12 +4494,50 @@ fn open_native_audio_reader(
             url,
             mime_type,
             cookie,
+            content_length,
+            style,
         } => {
-            let request_url = url::Url::parse(&url)
-                .map_err(|error| cache_error(format!("audio URL parse failed: {error}")))?;
-            let total = signed_content_length(&request_url).unwrap_or(0) as usize;
+            let style = style.unwrap_or_default();
+            let request_url = validate_media_url(style, &url)?;
+            let total = content_length
+                .or_else(|| signed_content_length(&request_url))
+                .unwrap_or(0) as usize;
             if total == 0 {
-                return Err(cache_error("audio URL declared no length"));
+                /*
+                 * YouTube signs its length into every URL, so a missing one means a URL that
+                 * cannot be planned around. An addon may simply not have disclosed one; its
+                 * whole body is then the only way to give the decoder something readable, so it
+                 * is fetched once and read back from a temp file the reader deletes on drop.
+                 */
+                if style == MediaRequestStyle::Youtube {
+                    return Err(cache_error("audio URL declared no length"));
+                }
+                let bytes = fetch_audio_bytes(
+                    url,
+                    track_id.to_string(),
+                    cookie,
+                    Some(style),
+                    content_length,
+                )
+                .await?;
+                if bytes.is_empty() {
+                    return Err(cache_error("audio download returned no data"));
+                }
+                let path = temp_audio_path();
+                fs::write(&path, &bytes)
+                    .map_err(|error| cache_error(format!("audio temp write failed: {error}")))?;
+                let file = match File::open(&path) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        let _ = fs::remove_file(&path);
+                        return Err(cache_error(format!("audio temp read failed: {error}")));
+                    }
+                };
+                return Ok(NativeAudioReader {
+                    mime_type,
+                    reader: Box::new(TempAudioFile { file: Some(file), path }),
+                    buffer: None,
+                });
             }
 
             let ranges = playback_ranges(total);
@@ -4276,6 +4552,8 @@ fn open_native_audio_reader(
                 Arc::clone(&buffer),
                 ranges,
                 Some((slot_index, generation)),
+                Some(style),
+                content_length,
             ));
             Ok(NativeAudioReader {
                 reader: Box::new(audio::BufferReader::new(Arc::clone(&buffer))),
@@ -4357,6 +4635,69 @@ struct NativeAudioReader {
     buffer: Option<Arc<Mutex<MediaBuffer>>>,
 }
 
+/// A fresh path for a whole addon body that had no declared length.
+fn temp_audio_path() -> PathBuf {
+    static TEMP_AUDIO_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = TEMP_AUDIO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "zuno-stream-{}-{sequence}.bin",
+        std::process::id()
+    ))
+}
+
+/**
+ * A whole addon body written to disk and removed when its reader drops.
+ *
+ * An addon stream whose resolve disclosed no length cannot be published to the decoder as a
+ * growing buffer, so it is fetched once and read back here. The file stays seekable because
+ * symphonia's probe seeks, and it must not outlive the deck that reads it — this is a song, not
+ * a cache entry.
+ */
+struct TempAudioFile {
+    /// `Option` so `drop` can close it *before* deleting: Windows refuses to remove an open file.
+    file: Option<File>,
+    path: PathBuf,
+}
+
+impl Read for TempAudioFile {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file
+            .as_mut()
+            .expect("temp audio file stays open while it is read")
+            .read(buffer)
+    }
+}
+
+impl Seek for TempAudioFile {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.file
+            .as_mut()
+            .expect("temp audio file stays open while it is seeked")
+            .seek(position)
+    }
+}
+
+impl symphonia::core::io::MediaSource for TempAudioFile {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.file
+            .as_ref()?
+            .metadata()
+            .ok()
+            .map(|metadata| metadata.len())
+    }
+}
+
+impl Drop for TempAudioFile {
+    fn drop(&mut self) {
+        self.file = None;
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 
 
 /**
@@ -4380,7 +4721,7 @@ async fn native_audio_load(
     standby: Option<bool>,
 ) -> Result<f64, CommandError> {
     let NativeAudioReader { reader, mime_type, buffer } =
-        open_native_audio_reader(&app, &track_id, source, standby.unwrap_or(false))?;
+        open_native_audio_reader(&app, &track_id, source, standby.unwrap_or(false)).await?;
     let started_at = Instant::now();
 
     let decoded = tauri::async_runtime::spawn_blocking(move || {
@@ -5635,6 +5976,7 @@ mod tests {
         apply_set_cookie, audio_url_with_range, cookie_account_identity, cookie_domain_matches,
         error_cause_chain, is_slow_persist_cookie, is_youtube_cookie_host, parse_cookie_header, sanitize_log_url,
         audio_chunk_size, playback_ranges, serialize_cookie_pairs, MediaBuffer, AUDIO_HEAD_CHUNK_BYTES, signed_content_length, store_media_item,
+        expected_range_len, range_header_value, redact_media_url, MediaRequestStyle,
         MediaItem, AUDIO_MIN_CHUNK_BYTES, MEDIA_SERVER_MAX_ITEMS, OFFLINE_CHUNK_BYTES,
         load_superseded, LOAD_GENERATION, bytes_preview,
         YoutubeAccountStore, generate_slot_id, login_partition_directory_name,
@@ -5711,13 +6053,50 @@ mod tests {
         )
         .expect("stream source");
         match stream {
-            NativeAudioSource::Stream { url, mime_type, cookie } => {
+            NativeAudioSource::Stream {
+                url,
+                mime_type,
+                cookie,
+                content_length,
+                style,
+            } => {
                 assert!(url.contains("googlevideo"));
                 assert_eq!(mime_type, "audio/webm; codecs=\"opus\"");
                 assert_eq!(cookie.as_deref(), Some("SAPISID=x"));
+                // The old payload has neither new field; it must keep meaning YouTube.
+                assert_eq!(content_length, None);
+                assert_eq!(style, None);
             }
             _ => panic!("kind did not select the stream variant"),
         }
+
+        // The addon shape: both fields in camelCase, and style picks the addon transport.
+        let addon = serde_json::from_str::<NativeAudioSource>(
+            r#"{"kind":"stream","url":"https://cdn.example/audio","mimeType":"audio/mp4","contentLength":4844302,"style":"addon"}"#,
+        )
+        .expect("addon stream source");
+        assert!(matches!(
+            addon,
+            NativeAudioSource::Stream {
+                content_length: Some(4_844_302),
+                style: Some(MediaRequestStyle::Addon),
+                ..
+            }
+        ));
+
+        // YouTube leaves both new fields off; the default must stay exactly what it was.
+        let youtube = serde_json::from_str::<NativeAudioSource>(
+            r#"{"kind":"stream","url":"https://r1.googlevideo.com/videoplayback?clen=99","mimeType":"audio/webm","style":"youtube"}"#,
+        )
+        .expect("youtube style");
+        assert!(matches!(
+            youtube,
+            NativeAudioSource::Stream {
+                style: Some(MediaRequestStyle::Youtube),
+                content_length: None,
+                ..
+            }
+        ));
 
         // The cookie is absent when the session is signed out, and absent must not mean invalid.
         let anonymous = serde_json::from_str::<NativeAudioSource>(
@@ -6049,6 +6428,29 @@ mod tests {
         let no_clen =
             url::Url::parse("https://rr6.googlevideo.com/videoplayback?itag=140").expect("parses");
         assert_eq!(signed_content_length(&no_clen), None);
+    }
+
+    #[test]
+    fn addon_style_uses_standard_range_header() {
+        assert_eq!(range_header_value(0, 1023), "bytes=0-1023");
+    }
+
+    #[test]
+    fn addon_range_length_is_checked() {
+        assert_eq!(expected_range_len(0, 1023), 1024);
+        assert_eq!(expected_range_len(1000, 1999), 1000);
+    }
+
+    #[test]
+    fn addon_media_urls_are_redacted() {
+        assert_eq!(
+            redact_media_url(MediaRequestStyle::Addon, "https://host.example/secret/audio?token=x"),
+            "https://host.example/***"
+        );
+        assert_eq!(
+            redact_media_url(MediaRequestStyle::Youtube, "https://x/y?token=abc"),
+            "https://x/y"
+        );
     }
 
 

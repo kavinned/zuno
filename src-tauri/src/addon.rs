@@ -64,6 +64,25 @@ fn validate_addon_url(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Rejects anything the addon media transport must never fetch, without echoing the URL.
+///
+/// Unlike `validate_addon_url`, this is not the addon *base* URL policy: a resolved media URL
+/// may be plain `http` on any host, because it is the addon's own resolve output rather than an
+/// endpoint the user configured.
+pub(crate) fn validate_http_url(raw: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(raw).map_err(|_| "The media URL is not valid.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Media URLs must use http or https.".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Media URLs must not contain embedded credentials.".to_string());
+    }
+    if parsed.host().is_none() {
+        return Err("The media URL has no host.".to_string());
+    }
+    Ok(parsed)
+}
+
 /// `scheme://host[:port]/***` — the only form of an addon URL that may be logged.
 pub(crate) fn redacted_url(raw: &str) -> String {
     let Ok(parsed) = url::Url::parse(raw) else {
@@ -330,6 +349,16 @@ mod tests {
     #[test]
     fn rejects_credentials() {
         assert!(validate_addon_url("https://user:pass@host/dev").is_err());
+    }
+
+    #[test]
+    fn media_urls_allow_any_host_but_still_reject_bad_schemes_and_credentials() {
+        assert!(validate_http_url("https://cdn.example/audio").is_ok());
+        // Unlike the addon base URL, a media URL may be plain http on a public host.
+        assert!(validate_http_url("http://cdn.example/audio").is_ok());
+        assert!(validate_http_url("file:///tmp/x").is_err());
+        assert!(validate_http_url("https://user:pass@cdn.example/audio").is_err());
+        assert!(validate_http_url("https://").is_err());
     }
 
     #[test]
