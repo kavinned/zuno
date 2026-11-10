@@ -324,7 +324,7 @@ function ExplicitBadge() {
  * pushing the stamp out of the row. The format is shown when the addon reported one, since
  * "FLAC" is the fact that explains why the row is here at all.
  */
-function AddonBadge({ format }: { format?: string }) {
+export function AddonBadge({ format }: { format?: string }) {
   return (
     <span
       title={format ? `Addon · ${format}` : "From an addon source"}

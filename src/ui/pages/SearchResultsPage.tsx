@@ -13,6 +13,7 @@ import type {
 import { libraryController, type PlayerControllerActions } from "../../player/playerStore";
 import { AlbumCard } from "../components/AlbumCard";
 import { ArtistLinks } from "../components/ArtistLinks";
+import { AddonBadge } from "../components/TrackRow";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { usePlaylistContextMenu } from "../components/PlaylistContextMenu";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
@@ -428,6 +429,8 @@ export function SearchResultsPage({
                           <strong>{track.title}</strong>
                           <ArtistLinks artists={track.artists} fallback={track.artist} />
                         </span>
+                        {/* Row-level, so the text column's truncation cannot swallow it. */}
+                        {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
                         <PlayActiveIcon size={18} />
                       </button>
                     );
