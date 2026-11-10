@@ -427,6 +427,49 @@ for (const [error, expected] of [
 
 {
   const sourceId = SOURCE_A;
+  const baseUrl = "https://stale-flags.example/secret";
+  const { service, registry, created } = await setup({
+    sources: [{ id: sourceId, baseUrl, allowDownloads: true, checkValidLossless: false }],
+    outputCapable: false,
+    script: () => ({
+      manifest: manifest({ allowDownloads: true, checkValidLossless: false }),
+    }),
+  });
+
+  await service.probeSource(sourceId);
+  equal(created.length, 1, "the probe built the client");
+  let searchCalls = 0;
+  created[0].search = async () => {
+    searchCalls += 1;
+    // A concurrent probe learns stricter flags while this search is in flight.
+    await registry.recordProbe(
+      sourceId,
+      "gated",
+      manifest({ allowDownloads: false, checkValidLossless: true }),
+    );
+    throw new AddonRequestError("server", 503);
+  };
+
+  const tracks = await service.search("q", "high");
+  equal(tracks.length, 0, "the failing search returns nothing");
+  equal(registry.get(sourceId)?.lastHealth, "unreachable", "the failure is recorded");
+  equal(
+    registry.get(sourceId)?.checkValidLossless,
+    true,
+    "the stale snapshot does not clear the gate",
+  );
+  equal(
+    registry.get(sourceId)?.allowDownloads,
+    false,
+    "the stale snapshot does not restore the downloads restriction",
+  );
+
+  await service.search("q2", "high");
+  equal(searchCalls, 1, "the gated source is not contacted after the failure");
+}
+
+{
+  const sourceId = SOURCE_A;
   const baseUrl = "https://rows.example/secret";
   const { service, rows } = await setup({
     sources: [{ id: sourceId, baseUrl }],

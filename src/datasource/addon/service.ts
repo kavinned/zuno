@@ -369,16 +369,18 @@ export class AddonService {
    * transient failure, so the source's own manifest fields are handed back unchanged.
    */
   private async recordHealth(source: AddonSourceConfig, health: AddonHealth): Promise<void> {
+    /* A concurrent probe may have learned stricter flags since the caller's snapshot. */
+    const current = this.deps.registry.get(source.id) ?? source;
     const manifest: AddonManifest = {
-      id: source.id,
-      name: source.manifestName,
-      version: source.manifestVersion,
+      id: current.id,
+      name: current.manifestName,
+      version: current.manifestVersion,
       resources: [],
       settings: [],
-      allowDownloads: source.allowDownloads,
-      checkValidLossless: source.checkValidLossless,
+      allowDownloads: current.allowDownloads,
+      checkValidLossless: current.checkValidLossless,
     };
-    await this.deps.registry.recordProbe(source.id, health, manifest);
+    await this.deps.registry.recordProbe(current.id, health, manifest);
   }
 
   private isEligible(source: AddonSourceConfig): boolean {
