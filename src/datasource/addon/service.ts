@@ -417,25 +417,33 @@ export class AddonService {
     };
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     const fingerprints = new Map<string, string>();
+    const skipped = new Set<string>();
     let best: { sourceId: string; score: number } | undefined;
 
     for (const query of queries) {
       if (Date.now() >= deadline) break;
 
-      const searched = await Promise.all(
-        sources.map(async (source) => ({
+      const active = sources.filter(
+        (source) => !skipped.has(source.id) && this.isEligible(registry.get(source.id) ?? source),
+      );
+      const searched = await Promise.allSettled(
+        active.map(async (source) => ({
           source,
           found: await this.substitutionSearch(source, query, deadline),
         })),
       );
       const candidates: MatchCandidate[] = [];
-      for (const { source, found } of searched) {
-        for (const row of found) {
-          candidates.push({ sourceId: source.id, sourceOrder: source.order, row });
+      for (const result of searched) {
+        if (result.status !== "fulfilled") continue;
+        for (const row of result.value.found) {
+          candidates.push({
+            sourceId: result.value.source.id,
+            sourceOrder: result.value.source.order,
+            row,
+          });
         }
       }
 
-      const skipped = new Set<string>();
       for (const { candidate, score } of rankAddonCandidates(matchTarget, candidates)) {
         if (Date.now() >= deadline) break;
         if (skipped.has(candidate.sourceId)) continue;
@@ -445,17 +453,16 @@ export class AddonService {
         const source = sourceById.get(candidate.sourceId);
         if (source === undefined) continue;
 
-        let fingerprint = fingerprints.get(source.id);
-        if (fingerprint === undefined) {
-          fingerprint = await sourceFingerprint(source.baseUrl);
-          fingerprints.set(source.id, fingerprint);
-        }
-        const [track] = await rows.rememberMany([rowToRef(source, candidate.row)], fingerprint);
-
-        const controller = new AbortController();
-        let stream: ResolvedAddonStream | undefined;
         try {
-          stream = await withinDeadline(
+          let fingerprint = fingerprints.get(source.id);
+          if (fingerprint === undefined) {
+            fingerprint = await sourceFingerprint(source.baseUrl);
+            fingerprints.set(source.id, fingerprint);
+          }
+          const [track] = await rows.rememberMany([rowToRef(source, candidate.row)], fingerprint);
+
+          const controller = new AbortController();
+          const stream = await withinDeadline(
             this.resolveTrack(track, "lossless", {
               engine: options.engine,
               signal: controller.signal,
@@ -463,6 +470,8 @@ export class AddonService {
             deadline - Date.now(),
             controller,
           );
+          if (stream === undefined) break;
+          if (stream.lossless) return { track, stream };
         } catch (error) {
           const kind = error instanceof AddonRequestError ? error.kind : undefined;
           if (
@@ -472,13 +481,17 @@ export class AddonService {
             || kind === "server"
           ) {
             const health = healthForError(error);
-            if (health !== null) await this.recordHealth(source, health);
             skipped.add(source.id);
+            if (health !== null) {
+              try {
+                await this.recordHealth(source, health);
+              } catch {
+                /* A health write must not fail the substitution attempt. */
+              }
+            }
           }
           continue;
         }
-        if (stream === undefined) break;
-        if (stream.lossless) return { track, stream };
       }
     }
 

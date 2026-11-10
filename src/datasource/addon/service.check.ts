@@ -1079,4 +1079,31 @@ function matchRow(overrides: Partial<AddonSearchRow> = {}): AddonSearchRow {
   equal(match?.track.addon?.trackId, "second", "a failed candidate falls through to the next");
 }
 
+{
+  const sourceId = SOURCE_A;
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://skip.example/secret" }],
+    script: () => ({
+      searchResult: [matchRow()],
+      streamError: () => new AddonRequestError("server", 503),
+    }),
+  });
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "the server error is a miss");
+  equal(created[0].searchQueries.length, 1, "a source that errored is not searched again");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service, rows } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://storage.example/secret" }],
+    script: () => ({ searchResult: [matchRow()] }),
+  });
+  rows.rememberMany = async () => {
+    throw new Error("storage down");
+  };
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a row-cache failure is a miss");
+}
+
 console.log("addon/service: ok");
