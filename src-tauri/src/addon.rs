@@ -22,6 +22,16 @@ pub(crate) struct AddonHttpResponse {
     retry_after: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AddonLengthProbe {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+    accepts_ranges: bool,
+}
+
 /// Whether a plain-`http` host is a local or private-network literal.
 fn is_local_or_private_host(parsed: &url::Url) -> bool {
     match parsed.host() {
@@ -91,6 +101,138 @@ fn header_value(response: &reqwest::Response, name: reqwest::header::HeaderName)
         .map(str::to_string)
 }
 
+/// The one client policy every addon request uses: the app trust store, redirects only through
+/// `should_follow_redirect`, and a caller-chosen timeout.
+fn addon_client(timeout_ms: u64) -> Result<reqwest::Client, String> {
+    crate::http_client_builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if should_follow_redirect(attempt.previous().len(), attempt.url().as_str()) {
+                attempt.follow()
+            } else {
+                attempt.error("addon redirect blocked")
+            }
+        }))
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .map_err(|error| format!("addon HTTP client creation failed: {error}"))
+}
+
+fn parse_content_length(value: Option<&str>) -> Option<u64> {
+    value?.trim().parse().ok()
+}
+
+fn accepts_ranges(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.to_ascii_lowercase().contains("bytes"))
+}
+
+/// Addon source ids double as keyring account names; only a lowercase UUID keeps them inert.
+fn valid_source_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+        })
+}
+
+fn addon_secret_entry(source_id: &str) -> Result<keyring::Entry, String> {
+    if !valid_source_id(source_id) {
+        return Err("The addon source id is not valid.".to_string());
+    }
+    keyring::Entry::new(crate::KEYRING_SERVICE, &format!("addon:{source_id}"))
+        .map_err(|error| format!("credential store unavailable: {error}"))
+}
+
+/// Reads a stream's size without downloading it.
+///
+/// The length is best-effort: a server that refuses `HEAD`, ignores `Range`, or simply does not
+/// say is still a usable stream, so only transport failures are `Err`.
+#[tauri::command]
+pub(crate) async fn addon_probe_length(url: String) -> Result<AddonLengthProbe, String> {
+    validate_addon_url(&url)?;
+    let started_at = Instant::now();
+    let client = addon_client(ADDON_DEFAULT_TIMEOUT_MS)?;
+
+    let head = client
+        .head(&url)
+        .header(reqwest::header::USER_AGENT, "Zuno/1.4.0")
+        .header(reqwest::header::ACCEPT, "*/*")
+        .send()
+        .await
+        .map_err(|error| format!("addon length probe failed: {}", error.without_url()))?;
+
+    let mut status = head.status().as_u16();
+    let mut content_type = header_value(&head, reqwest::header::CONTENT_TYPE);
+    let mut supports_ranges =
+        accepts_ranges(header_value(&head, reqwest::header::ACCEPT_RANGES).as_deref());
+    let mut content_length = parse_content_length(
+        header_value(&head, reqwest::header::CONTENT_LENGTH).as_deref(),
+    );
+
+    if content_length.is_none() || matches!(status, 405 | 501) {
+        let ranged = client
+            .get(&url)
+            .header(reqwest::header::USER_AGENT, "Zuno/1.4.0")
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(reqwest::header::RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map_err(|error| format!("addon length probe failed: {}", error.without_url()))?;
+
+        status = ranged.status().as_u16();
+        content_type = header_value(&ranged, reqwest::header::CONTENT_TYPE).or(content_type);
+        supports_ranges = supports_ranges
+            || accepts_ranges(header_value(&ranged, reqwest::header::ACCEPT_RANGES).as_deref());
+        content_length = match status {
+            206 => header_value(&ranged, reqwest::header::CONTENT_RANGE)
+                .as_deref()
+                .and_then(parse_content_range_total),
+            200 => parse_content_length(
+                header_value(&ranged, reqwest::header::CONTENT_LENGTH).as_deref(),
+            ),
+            _ => None,
+        };
+    }
+
+    eprintln!(
+        "[internal][addon][info] addon_probe_length url={} status={} content_length={:?} elapsed_ms={}",
+        redacted_url(&url),
+        status,
+        content_length,
+        started_at.elapsed().as_millis()
+    );
+
+    Ok(AddonLengthProbe {
+        content_length,
+        content_type,
+        accepts_ranges: supports_ranges,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn addon_secret_get(source_id: String) -> Result<Option<String>, String> {
+    match addon_secret_entry(&source_id)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("addon secret load failed: {error}")),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn addon_secret_set(source_id: String, value: String) -> Result<(), String> {
+    addon_secret_entry(&source_id)?
+        .set_password(&value)
+        .map_err(|error| format!("addon secret save failed: {error}"))
+}
+
+#[tauri::command]
+pub(crate) fn addon_secret_delete(source_id: String) -> Result<(), String> {
+    match addon_secret_entry(&source_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("addon secret delete failed: {error}")),
+    }
+}
+
 /// GET-only JSON transport for addon endpoints.
 ///
 /// Every HTTP status is returned to the caller with its body, because an addon's 404/429/5xx
@@ -104,17 +246,7 @@ pub(crate) async fn addon_http_request(
     let started_at = Instant::now();
     let timeout_ms = input.timeout_ms.unwrap_or(ADDON_DEFAULT_TIMEOUT_MS);
 
-    let client = crate::http_client_builder()
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if should_follow_redirect(attempt.previous().len(), attempt.url().as_str()) {
-                attempt.follow()
-            } else {
-                attempt.error("addon redirect blocked")
-            }
-        }))
-        .timeout(Duration::from_millis(timeout_ms))
-        .build()
-        .map_err(|error| format!("addon HTTP client creation failed: {error}"))?;
+    let client = addon_client(timeout_ms)?;
 
     let mut response = client
         .get(&input.url)
@@ -211,6 +343,22 @@ mod tests {
     fn parses_content_range_total() {
         assert_eq!(parse_content_range_total("bytes 0-0/12345"), Some(12345));
         assert_eq!(parse_content_range_total("bytes 0-0/*"), None);
+    }
+
+    #[test]
+    fn accepts_only_uuid_source_ids() {
+        assert!(valid_source_id("3f1c2a44-1111-4222-8333-444455556666"));
+        assert!(!valid_source_id(""));
+        assert!(!valid_source_id("../../x"));
+        assert!(!valid_source_id("3F1C2A44-1111-4222-8333-444455556666"));
+    }
+
+    #[test]
+    fn parses_content_length_and_accept_ranges() {
+        assert_eq!(parse_content_length(Some("12345")), Some(12345));
+        assert_eq!(parse_content_length(Some("nope")), None);
+        assert!(accepts_ranges(Some("bytes")));
+        assert!(!accepts_ranges(None));
     }
 
     #[test]
