@@ -144,7 +144,8 @@ export function TrackInfo() {
 
   useEffect(() => {
     if (!currentTrack || !targetPlaylist) return;
-    if (isLocalPlaylist(targetPlaylist) || currentTrack.source === "local") return;
+    // Only YouTube tracks have a YouTube playlist membership to ask about.
+    if (isLocalPlaylist(targetPlaylist) || currentTrack.source !== "youtube") return;
     if (isTrackKnownInPlaylist(currentTrack, targetPlaylist)) return;
 
     let active = true;
@@ -187,7 +188,7 @@ export function TrackInfo() {
   const isLikeStatusLoading =
     (libraryState.status === "restoring" || libraryState.status === "loading")
     && !libraryState.library;
-  const canLikeCurrentTrack = currentTrack.source !== "local";
+  const canLikeCurrentTrack = currentTrack.source === "youtube";
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -277,7 +278,12 @@ export function TrackInfo() {
           )}
         </div>
         <div className="truncate text-xs text-muted-foreground">
-          <ArtistLinks artists={currentTrack.artists} fallback={currentTrack.artist} />
+          {/* Addon artists have no artist id, so their names must not trigger a YouTube search. */}
+          <ArtistLinks
+            artists={currentTrack.artists}
+            fallback={currentTrack.artist}
+            interactive={currentTrack.source !== "addon"}
+          />
         </div>
       </div>
 
@@ -329,6 +335,8 @@ export function TrackInfo() {
           </button>
         )}
 
+        {/* Addon tracks belong to no playlist; local and YouTube tracks keep their own paths. */}
+        {currentTrack.source !== "addon" && (
         <FloatingPanel
           open={isDefaultMenuOpen}
           onOpenChange={setIsDefaultMenuOpen}
@@ -442,6 +450,7 @@ export function TrackInfo() {
             </div>
           </div>
         </FloatingPanel>
+        )}
       </div>
     </div>
   );
