@@ -27,19 +27,28 @@ export class SearchController {
       return { ...EMPTY_RESULTS, tracks: searchDownloads(normalizedQuery) };
     }
 
-    const addonPromise = this.searchAddons(normalizedQuery);
     let latestYoutube = EMPTY_RESULTS;
     let latestAddons: Track[] = [];
+    let addonsSettled = false;
     const mergeAddons = (base: SearchResults): SearchResults => ({
       ...base,
       tracks: [...base.tracks, ...latestAddons],
     });
 
-    /* The addon promise is only awaited when the caller has no other channel to receive it. */
+    const addonPromise = this.searchAddons(normalizedQuery).then((tracks) => {
+      latestAddons = tracks;
+      addonsSettled = true;
+      return tracks;
+    });
+
+    /*
+     * A late update is only needed when the addon is still pending: an addon that already
+     * settled is folded into the value `search` returns, so a second delivery would only
+     * overwrite that merged state from the caller's own reaction to the return value.
+     */
     const deliverLateAddons = (): void => {
       if (!onUpdate) return;
       void addonPromise.then((tracks) => {
-        latestAddons = tracks;
         if (tracks.length > 0) onUpdate(mergeAddons(latestYoutube));
       });
     };
@@ -59,6 +68,7 @@ export class SearchController {
         latestAddons = await addonPromise;
         return mergeAddons(youtubeResults);
       }
+      if (addonsSettled) return mergeAddons(youtubeResults);
       deliverLateAddons();
       return youtubeResults;
     }
@@ -77,6 +87,7 @@ export class SearchController {
       latestAddons = await addonPromise;
       return mergeAddons(latestYoutube);
     }
+    if (addonsSettled) return mergeAddons(latestYoutube);
     deliverLateAddons();
     return latestYoutube;
   }

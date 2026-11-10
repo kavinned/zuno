@@ -130,6 +130,26 @@ setOnline(true);
 }
 
 {
+  const youtube = deferred<SearchResults>();
+  const addons = new FakeAddons(async () => [addonTrack("addon1")]);
+  const source = new FakeDataSource();
+  source.mixed = () => youtube.promise;
+  const controller = new SearchController(source, addons);
+  const updates: SearchResults[] = [];
+
+  const pending = controller.search("q", (next) => updates.push(next));
+  await flush();
+  youtube.resolve(results([youtubeTrack("yt1")]));
+
+  const first = await pending;
+  equal(ids(first), "yt1,addon1", "an addon that wins the race is in the returned results");
+  equal(updates.length, 0, "no late update repeats the already-merged results");
+
+  await flush();
+  equal(updates.length, 0, "the merged list is not re-sent after settling");
+}
+
+{
   const addon = deferred<Track[]>();
   const addons = new FakeAddons(() => addon.promise);
   const source = new FakeDataSource();
