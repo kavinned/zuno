@@ -23,12 +23,18 @@ export interface RankedCandidate {
 type ArtistEvidence = "exact" | "shared" | "none" | "rejected";
 type DurationEvidence = "tight" | "loose" | "none" | "rejected";
 
-const LOSSLESS_TOKENS = ["flac", "alac", "wav", "aiff", "pcm", "lossless", "hi-res", "hires"];
+const LOSSLESS_CODECS = /\b(?:flac|alac|wav|aiff|pcm)\b/i;
+const LOSSLESS_TEXTS = ["lossless", "hi-res", "hires"];
 const ARTIST_SPLIT =
   /\s*(?:,|&|\/|;)\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s+featuring\s+|\s+x\s+|\s+with\s+/i;
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeAlbum(value: string | undefined): string | null {
+  const normalized = normalize(value ?? "");
+  return normalized.length > 0 ? normalized : null;
 }
 
 function splitNames(value: string | undefined): string[] {
@@ -42,13 +48,18 @@ function sameSet(left: string[], right: string[]): boolean {
   return a.size === b.size && [...a].every((entry) => b.has(entry));
 }
 
-/** The row's own markers plus the album's, so a karaoke or instrumental album is a different take. */
-function rowVersionMarkers(parts: ParsedTrackTitle, album: string | undefined): string[] {
+/** The side's own markers plus the album's, so a karaoke or instrumental album is a different take. */
+function versionMarkersFor(parts: ParsedTrackTitle, album: string | undefined): string[] {
   const markers = [...parts.versionMarkers];
   const normalizedAlbum = normalize(album ?? "");
   if (normalizedAlbum.includes("instrumental")) markers.push("instrumental");
   if (normalizedAlbum.includes("karaoke")) markers.push("karaoke");
   return markers;
+}
+
+function hasNonLatinLetter(text: string): boolean {
+  const letters = text.replace(/[^\p{L}]/gu, "");
+  return letters.length > 0 && !/^\p{Script=Latin}+$/u.test(letters);
 }
 
 function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): boolean {
@@ -63,8 +74,17 @@ function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): bool
     return true;
   }
   return (
-    (targetCore.length >= 2 && row.aliases.some((alias) => alias.includes(targetCore))) ||
-    (rowCore.length >= 2 && target.aliases.some((alias) => alias.includes(rowCore)))
+    (targetCore.length >= 2 &&
+      row.aliases.some(
+        (alias) =>
+          alias.includes(targetCore) &&
+          (hasNonLatinLetter(targetCore) || hasNonLatinLetter(alias)),
+      )) ||
+    (rowCore.length >= 2 &&
+      target.aliases.some(
+        (alias) =>
+          alias.includes(rowCore) && (hasNonLatinLetter(rowCore) || hasNonLatinLetter(alias)),
+      ))
   );
 }
 
@@ -91,8 +111,8 @@ function durationEvidence(
 }
 
 function albumMatches(target: MatchTarget, row: AddonSearchRow): boolean {
-  if (target.album === undefined || row.album === undefined) return false;
-  return normalize(target.album) === normalize(row.album);
+  const targetAlbum = normalizeAlbum(target.album);
+  return targetAlbum !== null && targetAlbum === normalizeAlbum(row.album);
 }
 
 function sharesContextWord(target: ParsedTrackTitle, row: ParsedTrackTitle): boolean {
@@ -120,7 +140,7 @@ function score(
 
 export function rowClaimsLossless(row: AddonSearchRow): boolean {
   const text = `${row.format ?? ""} ${row.audioQuality ?? ""}`.toLowerCase();
-  return LOSSLESS_TOKENS.some((token) => text.includes(token));
+  return LOSSLESS_CODECS.test(text) || LOSSLESS_TEXTS.some((token) => text.includes(token));
 }
 
 function compareRanked(left: RankedCandidate, right: RankedCandidate): number {
@@ -146,7 +166,14 @@ export function rankAddonCandidates(
 
     const rowParts = parseTrackTitle(row.title);
     if (!titleCoreMatches(targetParts, rowParts)) continue;
-    if (!sameSet(targetParts.versionMarkers, rowVersionMarkers(rowParts, row.album))) continue;
+    if (
+      !sameSet(
+        versionMarkersFor(targetParts, target.album),
+        versionMarkersFor(rowParts, row.album),
+      )
+    ) {
+      continue;
+    }
 
     const artist = artistEvidence(target, row);
     if (artist === "rejected") continue;

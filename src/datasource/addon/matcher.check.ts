@@ -1,7 +1,12 @@
 export {};
 
 import type { AddonSearchRow } from "./types";
-import { rankAddonCandidates, type MatchCandidate, type MatchTarget } from "./matcher";
+import {
+  rankAddonCandidates,
+  rowClaimsLossless,
+  type MatchCandidate,
+  type MatchTarget,
+} from "./matcher";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -131,5 +136,36 @@ equal(
   "album",
   "album agreement is a confidence tie-break",
 );
+
+const karaokeTarget: MatchTarget = { ...target, album: "Karaoke Hits" };
+equal(
+  rank([row({ album: undefined })], undefined, karaokeTarget).length,
+  0,
+  "a karaoke target rejects the studio row",
+);
+equal(
+  rank([row({ album: "Karaoke Hits" })], undefined, karaokeTarget).length,
+  1,
+  "two karaoke takes match",
+);
+equal(
+  rank([row({ title: "Other Song (Gehra Hua)", artist: "Arijit Singh", durationSec: 362 })]).length,
+  0,
+  "a Latin subtitle does not alias-match a Latin title",
+);
+equal(
+  rowClaimsLossless({ id: "x", title: "t", format: "wave" }),
+  false,
+  "wave is not a lossless token",
+);
+
+const blankAlbumScores = rankAddonCandidates(
+  { ...target, album: "   " },
+  [
+    { sourceId: "source", sourceOrder: 0, row: row({ album: "" }) },
+    { sourceId: "source", sourceOrder: 1, row: row({ album: undefined }) },
+  ],
+).map((entry) => entry.score);
+equal(blankAlbumScores[0], blankAlbumScores[1], "a blank album does not earn the album score");
 
 console.log("addon/matcher: ok");
