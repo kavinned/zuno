@@ -154,6 +154,36 @@ equal(
   "a Latin subtitle does not alias-match a Latin title",
 );
 equal(
+  rank(
+    [row({ title: "(New Era)", artist: "KiiiKiii", durationSec: 180 })],
+    undefined,
+    { ...target, title: "404 (New Era)", artist: "KiiiKiii", durationSec: 179.6 },
+  ).length,
+  1,
+  "a parenthetical-only row matches the target alias",
+);
+equal(
+  rank(
+    [row({
+      id: "red-velvet",
+      title: "Trampoline",
+      artist: "Red Velvet",
+      album: "Red Velvet - IRENE & SEULGI - TILT - The 2nd Mini Album (2025) [FLAC 16bit-44.1kHz]",
+      durationSec: 156,
+    })],
+    undefined,
+    {
+      title: "Trampoline",
+      artist: "IRENE & SEULGI",
+      artists: [{ name: "IRENE & SEULGI" }],
+      album: "TILT - The 2nd Mini Album",
+      durationSec: 156,
+    },
+  ).length,
+  1,
+  "a group credit matches when the album names the subunit artist",
+);
+equal(
   rowClaimsLossless({ id: "x", title: "t", format: "wave" }),
   false,
   "wave is not a lossless token",

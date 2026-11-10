@@ -981,6 +981,66 @@ function matchRow(overrides: Partial<AddonSearchRow> = {}): AddonSearchRow {
 
 {
   const sourceId = SOURCE_A;
+  const { service, rows } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://slow-cache.example/secret" }],
+    script: () => ({
+      searchResult: [matchRow()],
+      streamAnswer: () => ({ url: "https://cdn.example/a.flac", format: "flac" }),
+    }),
+  });
+  const remember = rows.rememberMany.bind(rows);
+  rows.rememberMany = async (refs, fingerprint) => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return remember(refs, fingerprint);
+  };
+
+  const match = await service.findLosslessMatch(youtubeTarget, { budgetMs: 30 });
+  check(match !== null, "a slow row cache does not consume the substitution budget");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://slow-probe.example/secret" }],
+    probeLength: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { contentLength: 1234, acceptsRanges: true, sampleRateHz: 44100 };
+    },
+    script: () => ({
+      searchResult: [matchRow()],
+      streamAnswer: () => ({ url: "https://cdn.example/a.flac", format: "flac" }),
+    }),
+  });
+
+  const match = await service.findLosslessMatch(youtubeTarget, { budgetMs: 30 });
+  check(match !== null, "a slow FLAC probe does not consume the substitution budget");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://late-stats.example/secret" }],
+    probeLength: async () => ({
+      contentLength: 1_000_000,
+      acceptsRanges: true,
+      sampleRateHz: 44100,
+      bitDepth: 16,
+    }),
+    script: () => ({
+      searchResult: [matchRow()],
+      streamAnswer: () => ({ url: "https://cdn.example/a.flac", format: "flac" }),
+    }),
+  });
+
+  const match = await service.findLosslessMatch(youtubeTarget);
+  const stats = await match?.stream.stats;
+  equal(stats?.sampleRateHz, 44100, "late stats carry the sample rate");
+  equal(stats?.bitDepth, 16, "late stats carry the bit depth");
+  check(stats?.kbps !== undefined, "late stats derive the bitrate");
+}
+
+{
+  const sourceId = SOURCE_A;
   const { service, created } = await setup({
     sources: [{ id: sourceId, baseUrl: "https://lossy.example/secret" }],
     script: () => ({ searchResult: [matchRow({ format: "mp3" })] }),

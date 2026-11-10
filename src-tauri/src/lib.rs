@@ -3212,6 +3212,30 @@ fn total_media_length(
     }
 }
 
+/// `total_media_length`, probing an addon stream whose resolver did not state a length.
+///
+/// Without a length, playback has no size to publish a progressively filled buffer with, so it
+/// downloads the whole file to a temp file before the decoder opens — several seconds for a
+/// FLAC. A HEAD costs milliseconds, and only runs when the resolver stayed silent.
+async fn resolved_media_length(
+    style: MediaRequestStyle,
+    request_url: &url::Url,
+    raw_url: &str,
+    content_length: Option<u64>,
+) -> u64 {
+    let total = total_media_length(style, request_url, content_length);
+    if total > 0 || style != MediaRequestStyle::Addon {
+        return total;
+    }
+    match addon::probe_length(raw_url, false).await {
+        Ok(probe) => probe.content_length.unwrap_or(0),
+        Err(error) => {
+            eprintln!("[internal][tauri][warn] addon media length probe failed error={error}");
+            0
+        }
+    }
+}
+
 fn validate_media_url(style: MediaRequestStyle, raw: &str) -> Result<url::Url, CommandError> {
     match style {
         MediaRequestStyle::Youtube => url::Url::parse(raw)
@@ -4053,7 +4077,7 @@ async fn fetch_audio_source(
 ) -> Result<AudioSourcePayload, CommandError> {
     let style = style.unwrap_or_default();
     let request_url = validate_media_url(style, &url)?;
-    let total = total_media_length(style, &request_url, content_length) as usize;
+    let total = resolved_media_length(style, &request_url, &url, content_length).await as usize;
     let server = media_server()?;
     let key = format!("stream-{track_id}");
 
@@ -4499,9 +4523,8 @@ async fn open_native_audio_reader(
         } => {
             let style = style.unwrap_or_default();
             let request_url = validate_media_url(style, &url)?;
-            let total = content_length
-                .or_else(|| signed_content_length(&request_url))
-                .unwrap_or(0) as usize;
+            let total = resolved_media_length(style, &request_url, &url, content_length).await
+                as usize;
             if total == 0 {
                 /*
                  * YouTube signs its length into every URL, so a missing one means a URL that

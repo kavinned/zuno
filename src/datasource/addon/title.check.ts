@@ -52,8 +52,13 @@ equal(
   JSON.stringify(
     buildSearchQueries(parseTrackTitle("Song (Official Video) feat. Guest"), "Artist"),
   ),
-  JSON.stringify(["song artist", "song"]),
-  "title plus artist, then title alone",
+  JSON.stringify(["song artist", "song", "official video artist", "official video"]),
+  "title queries, then context fallbacks",
+);
+equal(
+  JSON.stringify(buildSearchQueries(parseTrackTitle("404 (New Era)"), "KiiiKiii")),
+  JSON.stringify(["404 kiiikiii", "404", "new era kiiikiii", "new era"]),
+  "a parenthetical-only addon row is reachable through its context query",
 );
 equal(
   JSON.stringify(buildSearchQueries(parseTrackTitle("Song"), "")),

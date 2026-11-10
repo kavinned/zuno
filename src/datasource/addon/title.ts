@@ -122,5 +122,13 @@ export function buildSearchQueries(parts: ParsedTrackTitle, primaryArtist: strin
   const title = parts.searchText.trim();
   const artist = primaryArtist.normalize("NFKC").toLocaleLowerCase().trim();
   const queries = title && artist ? [`${title} ${artist}`, title] : [title];
+  /*
+   * Some addon rows keep only the parenthetical (`(New Era)` for `404 (New Era)`), so the title
+   * query cannot find them. Context words are the only remaining bridge; try them last.
+   */
+  const context = parts.contextWords.join(" ").trim();
+  if (context) {
+    queries.push(...(artist ? [`${context} ${artist}`, context] : [context]));
+  }
   return unique(queries.filter((query) => query.length > 0));
 }

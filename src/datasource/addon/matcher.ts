@@ -73,6 +73,17 @@ function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): bool
   ) {
     return true;
   }
+  /*
+   * An addon row may carry only the parenthetical (`(New Era)`), leaving its alias as the
+   * whole identity. When that row has no separate core, matching the other side's alias is
+   * the only bridge; artist and version-marker checks still guard it.
+   */
+  if (rowCore.length > 0 && rowCore === row.aliases[0] && target.aliases.includes(rowCore)) {
+    return true;
+  }
+  if (targetCore.length > 0 && targetCore === target.aliases[0] && row.aliases.includes(targetCore)) {
+    return true;
+  }
   return (
     (targetCore.length >= 2 &&
       row.aliases.some(
@@ -97,7 +108,15 @@ function artistEvidence(target: MatchTarget, row: AddonSearchRow): ArtistEvidenc
   if (targetNames.length === 0 || rowNames.length === 0) return "none";
   if (normalize(target.artist) === normalize(row.artist ?? "")) return "exact";
   const targetSet = new Set(targetNames);
-  return rowNames.some((name) => targetSet.has(name)) ? "shared" : "rejected";
+  if (rowNames.some((name) => targetSet.has(name))) return "shared";
+  /*
+   * A unit's tracks are often credited to the parent group while the album names the unit
+   * ("Red Velvet - IRENE & SEULGI - ..."). The album line is then the only artist evidence.
+   */
+  const album = normalize(row.album ?? "");
+  const targetArtist = normalize(target.artist);
+  if (targetArtist.length > 0 && album.includes(targetArtist)) return "shared";
+  return "rejected";
 }
 
 function durationEvidence(

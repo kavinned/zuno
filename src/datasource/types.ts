@@ -9,12 +9,15 @@ export interface ArtistReference {
   name: string;
 }
 
-export interface AddonSubstitutionInfo {
-  trackId: string;
-  format?: string;
+export interface AddonStreamStats {
   sampleRateHz?: number;
   bitDepth?: number;
   kbps?: number;
+}
+
+export interface AddonSubstitutionInfo extends AddonStreamStats {
+  trackId: string;
+  format?: string;
   lossless: boolean;
 }
 

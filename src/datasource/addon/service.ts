@@ -1,6 +1,6 @@
 import type { AudioQuality } from "../../internal/audioQuality";
 import { logInternalInfo } from "../../internal/logging";
-import type { Track } from "../types";
+import type { AddonStreamStats, Track } from "../types";
 import { AddonClient, AddonRequestError, type AddonClientCallOptions } from "./client";
 import { acceptAddonStream, type AddonEngine } from "./format";
 import {
@@ -9,7 +9,7 @@ import {
   type MatchTarget,
 } from "./matcher";
 import type { AddonRegistry, AddonSourcePatch } from "./registry";
-import type { AddonRowCache, CachedAddonRow } from "./rows";
+import { addonTrackFromRef, type AddonRowCache, type CachedAddonRow } from "./rows";
 import { buildSearchQueries, parseTrackTitle } from "./title";
 import type { AddonLengthProbe, AddonRequest } from "./transport";
 import type {
@@ -48,6 +48,8 @@ export interface ResolvedAddonStream {
   bitDepth?: number;
   kbps?: number;
   expiresAt?: number;
+  /** Metadata probe that runs after acceptance; the stream itself never waits for it. */
+  stats?: Promise<AddonStreamStats | undefined>;
 }
 
 export interface AddonSubstitutionMatch {
@@ -336,6 +338,18 @@ export class AddonService {
     if (row === null || row.sourceFingerprint !== fingerprint) {
       throw new Error("This addon track is out of date. Search again.");
     }
+    return this.resolveStreamFor(source, ref, track, quality, options, row);
+  }
+
+  /** The network half of `resolveTrack`, shared with substitution so it never needs the row cache. */
+  private async resolveStreamFor(
+    source: AddonSourceConfig,
+    ref: AddonTrackRef,
+    track: Track,
+    quality: AudioQuality,
+    options: { engine?: AddonEngine; signal?: AbortSignal; probe?: boolean } = {},
+    cachedRow?: CachedAddonRow,
+  ): Promise<ResolvedAddonStream> {
     if (this.isGated(source)) {
       throw new Error("This addon source is gated until a lossless-capable output is available.");
     }
@@ -345,8 +359,12 @@ export class AddonService {
     try {
       answer = await client.resolveStream(ref.trackId, quality, { signal: options.signal });
     } catch (error) {
-      if (error instanceof AddonRequestError && error.kind === "miss" && row.streamUrl !== undefined) {
-        answer = answerFromRow(row);
+      if (
+        error instanceof AddonRequestError
+        && error.kind === "miss"
+        && cachedRow?.streamUrl !== undefined
+      ) {
+        answer = answerFromRow(cachedRow);
       } else {
         throw error;
       }
@@ -363,11 +381,13 @@ export class AddonService {
      * on the Rust engine the same request doubles as the missing content-length probe. Every
      * other format keeps the existing length-only probe, and only when Rust needs it.
      */
-    const probe = answerIsFlac(answer)
-      ? await this.probeStream(stream.url, true)
-      : engine === "rust" && contentLength === undefined
-        ? await this.probeStream(stream.url, false)
-        : undefined;
+    const probe = options.probe === false
+      ? undefined
+      : answerIsFlac(answer)
+        ? await this.probeStream(stream.url, true)
+        : engine === "rust" && contentLength === undefined
+          ? await this.probeStream(stream.url, false)
+          : undefined;
     if (engine === "rust" && contentLength === undefined) {
       contentLength = probe?.contentLength;
     }
@@ -387,6 +407,17 @@ export class AddonService {
     const kbps = stream.kbps ?? deriveKbps(contentLength, track.durationSec);
     if (kbps !== undefined) resolved.kbps = kbps;
     if (stream.expiresAtMs !== undefined) resolved.expiresAt = Math.floor(stream.expiresAtMs / 1000);
+    if (options.probe === false && answerIsFlac(answer)) {
+      resolved.stats = this.probeStream(stream.url, true).then((late) => {
+        if (late === undefined) return undefined;
+        const stats: AddonStreamStats = {};
+        if (late.sampleRateHz !== undefined) stats.sampleRateHz = late.sampleRateHz;
+        if (late.bitDepth !== undefined) stats.bitDepth = late.bitDepth;
+        const lateKbps = deriveKbps(late.contentLength, track.durationSec);
+        if (lateKbps !== undefined) stats.kbps = lateKbps;
+        return Object.keys(stats).length > 0 ? stats : undefined;
+      });
+    }
     return resolved;
   }
 
@@ -399,7 +430,7 @@ export class AddonService {
     target: Track,
     options: AddonSubstitutionOptions = {},
   ): Promise<AddonSubstitutionMatch | null> {
-    const { registry, rows } = this.deps;
+    const { registry } = this.deps;
     await registry.ensureLoaded();
     const startedAt = Date.now();
     const deadline = startedAt + (options.budgetMs ?? SUBSTITUTION_BUDGET_MS);
@@ -416,13 +447,16 @@ export class AddonService {
       durationSec: target.durationSec,
     };
     const sourceById = new Map(sources.map((source) => [source.id, source]));
-    const fingerprints = new Map<string, string>();
     const skipped = new Set<string>();
     let best: { sourceId: string; score: number } | undefined;
+    let lastSearchMs = 0;
+    let lastResolveMs = 0;
+    let attempts = 0;
 
     for (const query of queries) {
       if (Date.now() >= deadline) break;
 
+      const searchStartedAt = Date.now();
       const active = sources.filter(
         (source) => !skipped.has(source.id) && this.isEligible(registry.get(source.id) ?? source),
       );
@@ -432,6 +466,7 @@ export class AddonService {
           found: await this.substitutionSearch(source, query, deadline),
         })),
       );
+      lastSearchMs = Date.now() - searchStartedAt;
       const candidates: MatchCandidate[] = [];
       for (const result of searched) {
         if (result.status !== "fulfilled") continue;
@@ -454,24 +489,42 @@ export class AddonService {
         if (source === undefined) continue;
 
         try {
-          let fingerprint = fingerprints.get(source.id);
-          if (fingerprint === undefined) {
-            fingerprint = await sourceFingerprint(source.baseUrl);
-            fingerprints.set(source.id, fingerprint);
-          }
-          const [track] = await rows.rememberMany([rowToRef(source, candidate.row)], fingerprint);
+          attempts += 1;
+          /*
+           * Resolve from the search row directly. `resolveTrack` reads the persisted row, and a
+           * `rememberMany` write costs up to a second or more on the generic cache — enough to
+           * eat the whole substitution budget before the stream request even starts.
+           */
+          const ref = rowToRef(source, candidate.row);
+          const track = await addonTrackFromRef(ref);
 
+          const resolveStartedAt = Date.now();
           const controller = new AbortController();
           const stream = await withinDeadline(
-            this.resolveTrack(track, "lossless", {
+            this.resolveStreamFor(source, ref, track, "lossless", {
               engine: options.engine,
               signal: controller.signal,
+              probe: false,
             }),
             deadline - Date.now(),
             controller,
           );
+          lastResolveMs = Date.now() - resolveStartedAt;
           if (stream === undefined) break;
-          if (stream.lossless) return { track, stream };
+          if (stream.lossless) {
+            void this.cacheCandidate(source, ref);
+            logInternalInfo("addon.substitution.hit", {
+              sourceId: candidate.sourceId,
+              score,
+              codec: stream.codec,
+              mimeType: stream.mimeType,
+              attempts,
+              searchMs: lastSearchMs,
+              resolveMs: lastResolveMs,
+              elapsedMs: Date.now() - startedAt,
+            });
+            return { track, stream };
+          }
         } catch (error) {
           const kind = error instanceof AddonRequestError ? error.kind : undefined;
           if (
@@ -498,9 +551,22 @@ export class AddonService {
     logInternalInfo("addon.substitution.miss", {
       sourceId: best?.sourceId,
       score: best?.score,
+      attempts,
+      searchMs: lastSearchMs,
+      resolveMs: lastResolveMs,
       elapsedMs: Date.now() - startedAt,
     });
     return null;
+  }
+
+  /** Persist a matched row for later replays; the accepted stream does not wait for it. */
+  private async cacheCandidate(source: AddonSourceConfig, ref: AddonTrackRef): Promise<void> {
+    try {
+      const fingerprint = await sourceFingerprint(source.baseUrl);
+      await this.deps.rows.rememberMany([ref], fingerprint);
+    } catch {
+      /* Playback already has the stream; the row cache only matters for a later replay. */
+    }
   }
 
   allowDownloads(track: Track): boolean {

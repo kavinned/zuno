@@ -1,5 +1,6 @@
 import type {
   AccountOption,
+  AddonStreamStats,
   AddonSubstitutionInfo,
   GoogleAccountOption,
   ArtistNotificationLevel,
@@ -52,6 +53,11 @@ export type StreamData = {
   rustSource?: RustAudioSource;
   /** Real stream metadata, when the source could learn it (addon FLAC streams). */
   audioInfo?: { sampleRateHz?: number; bitDepth?: number; kbps?: number };
+  /**
+   * Format details that arrive after the stream was accepted, so the substitution budget is
+   * not spent probing. The player merges them into the displayed track when they resolve.
+   */
+  addonStats?: Promise<AddonStreamStats | undefined>;
   /** The addon rendition served in place of the original source, when one was substituted. */
   addonSubstitution?: AddonSubstitutionInfo;
 };

@@ -28,7 +28,7 @@ pub(crate) struct AddonHttpResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AddonLengthProbe {
     #[serde(skip_serializing_if = "Option::is_none")]
-    content_length: Option<u64>,
+    pub(crate) content_length: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_type: Option<String>,
     accepts_ranges: bool,
@@ -273,14 +273,19 @@ pub(crate) async fn addon_probe_length(
     sniff_flac: Option<bool>,
 ) -> Result<AddonLengthProbe, String> {
     validate_addon_url(&url)?;
+    probe_length(&url, sniff_flac.unwrap_or(false)).await
+}
+
+/// The probe itself, for callers holding a URL that is already validated as addon media.
+pub(crate) async fn probe_length(url: &str, sniff_flac: bool) -> Result<AddonLengthProbe, String> {
     let started_at = Instant::now();
     let client = addon_client(ADDON_DEFAULT_TIMEOUT_MS)?;
 
-    if sniff_flac.unwrap_or(false) {
-        let (status, probe) = sniff_flac_probe(&client, &url).await?;
+    if sniff_flac {
+        let (status, probe) = sniff_flac_probe(&client, url).await?;
         eprintln!(
             "[internal][addon][info] addon_probe_length url={} status={} content_length={:?} elapsed_ms={}",
-            redacted_url(&url),
+            redacted_url(url),
             status,
             probe.content_length,
             started_at.elapsed().as_millis()
@@ -289,7 +294,7 @@ pub(crate) async fn addon_probe_length(
     }
 
     let head = client
-        .head(&url)
+        .head(url)
         .header(reqwest::header::USER_AGENT, "Zuno/1.4.0")
         .header(reqwest::header::ACCEPT, "*/*")
         .send()
@@ -306,7 +311,7 @@ pub(crate) async fn addon_probe_length(
 
     if content_length.is_none() || matches!(status, 405 | 501) {
         let ranged = client
-            .get(&url)
+            .get(url)
             .header(reqwest::header::USER_AGENT, "Zuno/1.4.0")
             .header(reqwest::header::ACCEPT, "*/*")
             .header(reqwest::header::RANGE, "bytes=0-0")
@@ -331,7 +336,7 @@ pub(crate) async fn addon_probe_length(
 
     eprintln!(
         "[internal][addon][info] addon_probe_length url={} status={} content_length={:?} elapsed_ms={}",
-        redacted_url(&url),
+        redacted_url(url),
         status,
         content_length,
         started_at.elapsed().as_millis()
