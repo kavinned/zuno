@@ -72,7 +72,11 @@ export class AddonRowCache {
     for (const ref of refs) {
       const id = await addonCompositeId(ref.sourceId, ref.trackId);
       const row: CachedAddonRow = { ...ref, sourceFingerprint: fingerprint, cachedAt: Date.now() };
-      await this.store.set(rowKey(id), row);
+      /* streamUrl embeds the full addon base URL, which must never be persisted. The
+         in-memory row keeps it so this session can still fall back to it. */
+      const persisted: CachedAddonRow = { ...row };
+      delete persisted.streamUrl;
+      await this.store.set(rowKey(id), persisted);
       const ids = idsBySource.get(ref.sourceId);
       if (ids) ids.push(id);
       else idsBySource.set(ref.sourceId, [id]);

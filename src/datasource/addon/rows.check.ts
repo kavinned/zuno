@@ -20,9 +20,8 @@ class FakeStore implements AddonRowStore {
   }
 
   async set<T>(key: string, value: T): Promise<boolean> {
-    const changed = this.values.get(key) !== value;
-    this.values.set(key, value);
-    return changed;
+    this.values.set(key, JSON.parse(JSON.stringify(value)) as T);
+    return true;
   }
 
   async remove(key: string): Promise<void> {
@@ -61,7 +60,10 @@ check(store.values.has(rowKey), "row written under the prefixed key");
 
 const row = await cache.read(track.id);
 check(row !== null, "row round-trips");
-equal(await store.get(rowKey), row, "row persisted");
+check(
+  JSON.stringify(await store.get(rowKey)) === JSON.stringify(row),
+  "row persisted through serialisation",
+);
 equal(row?.sourceFingerprint, fingerprint, "fingerprint stored verbatim");
 equal(typeof row?.cachedAt, "number", "cachedAt stored");
 
@@ -123,5 +125,30 @@ const first = await fingerprintCache.remember({ ...ref, trackId: "first" }, "fin
 const second = await fingerprintCache.remember({ ...ref, trackId: "second" }, "fingerprint-b");
 equal((await fingerprintCache.read(first.id))?.sourceFingerprint, "fingerprint-a", "first fingerprint kept");
 equal((await fingerprintCache.read(second.id))?.sourceFingerprint, "fingerprint-b", "second fingerprint kept");
+
+const secretStore = new FakeStore();
+const secretCache = new AddonRowCache(secretStore);
+const secretRef: AddonTrackRef = {
+  sourceId,
+  trackId: "track-1",
+  title: "Hidden",
+  artist: "Artist",
+  streamUrl: "https://host/secret/audio?token=abc",
+};
+const secretTrack = await secretCache.remember(secretRef, fingerprint);
+const serialized = JSON.stringify([...secretStore.values]);
+check(!serialized.includes("host"), "base URL host not persisted");
+check(!serialized.includes("secret"), "base URL path not persisted");
+check(!serialized.includes("token"), "stream token not persisted");
+check(!serialized.includes("streamUrl"), "stream url field not persisted");
+equal((await secretCache.read(secretTrack.id))?.streamUrl, undefined, "read row has no stream url");
+equal(secretTrack.addon?.streamUrl, secretRef.streamUrl, "remembered track keeps the in-memory stream url");
+
+const secretManyRef: AddonTrackRef = { ...secretRef, trackId: "track-2" };
+const secretManyTracks = await secretCache.rememberMany([secretManyRef], fingerprint);
+const serializedMany = JSON.stringify([...secretStore.values]);
+check(!serializedMany.includes("host"), "rememberMany keeps the host out of the store");
+check(!serializedMany.includes("streamUrl"), "rememberMany omits the stream url field");
+equal(secretManyTracks[0].addon?.streamUrl, secretManyRef.streamUrl, "rememberMany track keeps the in-memory stream url");
 
 console.log("addon/rows: ok");
