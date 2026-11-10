@@ -13,7 +13,6 @@ import type {
 import { libraryController, type PlayerControllerActions } from "../../player/playerStore";
 import { AlbumCard } from "../components/AlbumCard";
 import { ArtistLinks } from "../components/ArtistLinks";
-import { AddonBadge } from "../components/TrackRow";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { usePlaylistContextMenu } from "../components/PlaylistContextMenu";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
@@ -426,10 +425,7 @@ export function SearchResultsPage({
                           iconSize={24}
                         />
                         <span className="flex min-w-0 flex-1 flex-col [&_span]:truncate [&_span]:text-xs [&_span]:text-muted-foreground [&_strong]:truncate [&_strong]:text-sm [&_strong]:font-medium">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <strong>{track.title}</strong>
-                            {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
-                          </div>
+                          <strong>{track.title}</strong>
                           <ArtistLinks artists={track.artists} fallback={track.artist} />
                         </span>
                         <PlayActiveIcon size={18} />

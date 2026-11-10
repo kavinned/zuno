@@ -36,8 +36,8 @@ void addonRegistry.ensureLoaded();
 
 const dataSource = new YouTubeMusicDataSource(addonService);
 
-export const libraryController = new LibraryController(dataSource, addonService);
-export const searchController = new SearchController(dataSource, addonService);
+export const libraryController = new LibraryController(dataSource);
+export const searchController = new SearchController(dataSource);
 /*
  * The offline queue needs a stream URL but must not depend on any particular data source, so
  * the source is injected here where both are already in scope.

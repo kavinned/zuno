@@ -1,5 +1,4 @@
 import { AuthExpiredError, type DataSource } from "../datasource/DataSource";
-import type { AddonService } from "../datasource/addon/service";
 import type {
   AccountOption,
   GoogleAccountOption,
@@ -26,7 +25,6 @@ import type {
 } from "../datasource/types";
 import { logInternalError, logInternalInfo } from "../internal/logging";
 import { isOnline } from "../internal/connectivity";
-import { getStreamingQuality } from "../internal/audioQuality";
 import { getAppSetting, setAppSetting } from "../internal/appSettings";
 import { forgetTrackInPlaylist, rememberTrackInPlaylist } from "./playlistMembership";
 import {
@@ -145,10 +143,7 @@ export class LibraryController {
   private sessionRecoveryPromise: Promise<void> | null = null;
   private lastSessionRecoveryAt = 0;
 
-  constructor(
-    private readonly dataSource: DataSource,
-    private readonly addons?: Pick<AddonService, "search">,
-  ) {}
+  constructor(private readonly dataSource: DataSource) {}
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -631,26 +626,7 @@ export class LibraryController {
     if (!this.dataSource.searchCategory) {
       return { artists: [], tracks: [], albums: [], playlists: [] };
     }
-    const results = await this.dataSource.searchCategory(query, category);
-    if (category !== "song" || !this.addons) return results;
-
-    const normalizedQuery = query.trim();
-    if (!normalizedQuery) return results;
-    const addonTracks = await this.searchAddonTracks(this.addons, normalizedQuery);
-    if (addonTracks.length === 0) return results;
-    return { ...results, tracks: [...results.tracks, ...addonTracks] };
-  }
-
-  /** A failing addon is its own business; the service has already recorded its health. */
-  private async searchAddonTracks(
-    addons: Pick<AddonService, "search">,
-    query: string,
-  ): Promise<Track[]> {
-    try {
-      return await addons.search(query, getStreamingQuality());
-    } catch {
-      return [];
-    }
+    return this.dataSource.searchCategory(query, category);
   }
 
   isAlbumSaved(albumId: string): boolean {
