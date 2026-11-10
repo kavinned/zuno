@@ -6594,7 +6594,12 @@ export class YouTubeMusicDataSource extends DataSource {
           url: match.stream.url,
           trackId: track.id,
           mimeType: match.stream.mimeType,
-          contentLength: match.stream.contentLength,
+          /*
+           * Deliberately no contentLength: with a known size Rust publishes a pending buffer and
+           * returns before the download finishes, so a CDN failure afterward would be invisible
+           * here and YouTube would never be tried. Without it Rust downloads synchronously, and a
+           * failure throws into the catch below.
+           */
           style: "addon",
         });
         if (payload.byteLength > 0) {
@@ -6609,9 +6614,11 @@ export class YouTubeMusicDataSource extends DataSource {
           trackId: track.id,
         });
       } catch (error) {
+        /* Name only: messages can carry the signed URL or response bytes, and the brief forbids
+           logging the URL. */
         logInternalWarn("YouTubeMusicDataSource.getStreamData substitution failed", {
           trackId: track.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: error instanceof Error ? error.name : typeof error,
         });
       }
     }

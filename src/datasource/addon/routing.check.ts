@@ -10,6 +10,7 @@ export {};
 import { YouTubeMusicDataSource } from "../youtube/YouTubeMusicDataSource";
 import type { AddonPlaybackSource, Track } from "../types";
 import type { AddonSubstitutionMatch, ResolvedAddonStream } from "./service";
+import { setAudioEngineMode } from "../../ui/settings/audioEngine";
 
 function check(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -152,5 +153,61 @@ substitutionCalls = 0;
 const losslessAddonSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
 await losslessAddonSource.getStreamData(track);
 equal(substitutionCalls, 0, "an addon track never substitutes");
+
+/*
+ * Native engine: Rust publishes a pending buffer and answers before the download finishes when
+ * it knows the length, so a CDN failure afterward is invisible to the caller. The substitution
+ * fetch must therefore omit `contentLength`, forcing the synchronous path whose failure can be
+ * caught and turned into a YouTube fallback.
+ */
+const nativeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+const fakeInvoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+  nativeCalls.push({ cmd, args });
+  if (cmd !== "fetch_audio_source") return undefined;
+  if (args.style === "addon") {
+    if (args.contentLength === undefined) throw new Error("addon fetch failed");
+    return {
+      url: "http://127.0.0.1/audio/stream-x",
+      mimeType: "audio/flac",
+      byteLength: args.contentLength,
+    };
+  }
+  return { url: "http://127.0.0.1/audio/youtube", mimeType: "audio/mp4", byteLength: 4321 };
+};
+
+const nativeStorage = new Map<string, string>();
+(globalThis as unknown as { window: unknown }).window = {
+  __TAURI_INTERNALS__: { invoke: fakeInvoke },
+  localStorage: {
+    getItem: (key: string) => nativeStorage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      nativeStorage.set(key, value);
+    },
+    removeItem: (key: string) => {
+      nativeStorage.delete(key);
+    },
+  },
+  dispatchEvent: () => true,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+};
+
+setAudioEngineMode("native");
+substitutionCalls = 0;
+const nativeSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+nativeSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+const nativeFallback = await nativeSource.getStreamData(youtubeTrack);
+setAudioEngineMode("rust");
+equal(nativeFallback.sourceUrl, "http://127.0.0.1/audio/youtube", "a failed addon fetch falls back to YouTube");
+equal(nativeFallback.addonSubstitution, undefined, "a failed addon fetch records no substitution");
+equal(substitutionCalls, 1, "the native path asks the addon once");
+const substitutionFetch = nativeCalls.find(
+  (call) => call.cmd === "fetch_audio_source" && call.args.style === "addon",
+);
+check(substitutionFetch !== undefined, "the addon fetch was attempted");
+equal(substitutionFetch.args.contentLength, undefined, "the native substitution fetch omits contentLength");
 
 console.log("addon/routing: ok");
