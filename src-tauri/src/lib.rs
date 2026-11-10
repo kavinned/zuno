@@ -45,6 +45,7 @@ mod windows_media;
 #[cfg(target_os = "linux")]
 mod linux_media;
 
+mod addon;
 mod audio;
 mod process_memory;
 mod discord_rpc;
@@ -53,7 +54,7 @@ mod opus_source;
 mod lastfm;
 
 // Keep the legacy service name so existing sign-in credentials survive the product rename.
-const KEYRING_SERVICE: &str = "com.ytmusicdock.app";
+pub(crate) const KEYRING_SERVICE: &str = "com.ytmusicdock.app";
 
 /// Durable settings store. Also the marker the app-data migration checks for.
 const APP_SETTINGS_FILE_NAME: &str = "settings-v1.json";
@@ -1650,6 +1651,24 @@ fn cache_clear(
     fs::create_dir_all(entries)
         .map_err(|error| cache_error(format!("cache directory creation failed: {error}")))?;
     calculate_cache_stats(&app)
+}
+
+#[tauri::command]
+fn cache_remove(
+    app: tauri::AppHandle,
+    lock: tauri::State<'_, CacheLock>,
+    key: String,
+) -> Result<bool, CommandError> {
+    let _guard = lock
+        .0
+        .lock()
+        .map_err(|_| cache_error("cache lock unavailable"))?;
+    let path = cache_entry_path(&app, &key)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(cache_error(format!("cache remove failed: {error}"))),
+    }
 }
 
 #[tauri::command]
@@ -5573,6 +5592,7 @@ pub fn run() {
             cache_stats,
             cache_set_max_bytes,
             cache_clear,
+            cache_remove,
             local_audio_scan,
             local_audio_read,
             local_vtt_read,
@@ -5581,6 +5601,7 @@ pub fn run() {
             local_audio_read_tags,
             local_audio_artwork,
             read_image_file,
+            addon::addon_http_request,
             process_memory::app_memory_report,
             local_audio_write_tags,
             local_audio_watch,
