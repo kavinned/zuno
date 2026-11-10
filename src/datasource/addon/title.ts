@@ -8,24 +8,27 @@ export interface ParsedTrackTitle {
 
 const NEUTRAL_LABELS = ["album version", "radio edit", "original mix", "deluxe version"];
 
-/** Canonical English marker first, then every spelling that names it. */
-const VERSION_MARKERS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["remix", ["remix", "リミックス"]],
-  ["live", ["live", "ライブ", "ライヴ"]],
-  ["acoustic", ["acoustic", "アコースティック"]],
-  ["instrumental", ["instrumental", "インストゥルメンタル", "インスト"]],
-  ["karaoke", ["karaoke", "カラオケ"]],
-  ["cover", ["cover", "カバー"]],
-  ["sped up", ["sped up", "スピードアップ"]],
-  ["slowed", ["slowed", "スロウ"]],
-  ["nightcore", ["nightcore", "ナイトコア"]],
-  ["extended", ["extended", "エクステンデッド"]],
-  ["edit", ["edit", "エディット"]],
-  ["demo", ["demo", "デモ"]],
-  ["reprise", ["reprise", "リプライズ"]],
+/** Canonical English marker, its Latin spellings, then its Japanese spellings. */
+const VERSION_MARKERS: ReadonlyArray<
+  readonly [string, readonly string[], readonly string[]]
+> = [
+  ["remix", ["remix"], ["リミックス"]],
+  ["live", ["live"], ["ライブ", "ライヴ"]],
+  ["acoustic", ["acoustic"], ["アコースティック"]],
+  ["instrumental", ["instrumental"], ["インストゥルメンタル", "インスト"]],
+  ["karaoke", ["karaoke"], ["カラオケ"]],
+  ["cover", ["cover"], ["カバー"]],
+  ["sped up", ["sped up"], ["スピードアップ"]],
+  ["slowed", ["slowed"], ["スロウ"]],
+  ["nightcore", ["nightcore"], ["ナイトコア"]],
+  ["extended", ["extended"], ["エクステンデッド"]],
+  ["edit", ["edit"], ["エディット"]],
+  ["demo", ["demo"], ["デモ"]],
+  ["reprise", ["reprise"], ["リプライズ"]],
 ];
 
-const BRACKETS = /\(([^()]*)\)|\[([^\[\]]*)\]/;
+const PAREN_BRACKETS = /\(([^()]*)\)/;
+const SQUARE_BRACKETS = /\[([^\[\]]*)\]/;
 const TAIL_SPLIT = /\s+[-–—|]\s+/;
 const FEAT_TAIL = /\s+(?:feat\.?|ft\.?|featuring)\b.*$/u;
 const FEAT_HEAD = /^(?:feat\.?|ft\.?|featuring)\b/;
@@ -46,14 +49,22 @@ function stripPunctuation(text: string): string {
   return text.replace(/[^\p{L}\p{N}]/gu, "");
 }
 
+function matchesLatin(text: string, spelling: string): boolean {
+  const tokens = words(text);
+  const wanted = spelling.split(" ");
+  return tokens.some((_, index) => wanted.every((token, offset) => tokens[index + offset] === token));
+}
+
 function classify(segment: string, parsed: ParsedTrackTitle): void {
   const text = collapse(segment);
   if (!text) return;
   if (NEUTRAL_LABELS.includes(text)) return;
   if (FEAT_HEAD.test(text)) return;
 
-  const markers = VERSION_MARKERS.filter(([, spellings]) =>
-    spellings.some((spelling) => text.includes(spelling)),
+  const markers = VERSION_MARKERS.filter(
+    ([, latin, japanese]) =>
+      latin.some((spelling) => matchesLatin(text, spelling)) ||
+      japanese.some((spelling) => text.includes(spelling)),
   ).map(([canonical]) => canonical);
 
   if (markers.length > 0) parsed.versionMarkers.push(...markers);
@@ -63,16 +74,20 @@ function classify(segment: string, parsed: ParsedTrackTitle): void {
   if (alias.length >= 2) parsed.aliases.push(alias);
 }
 
-/** Innermost first, repeatedly, so `[Official (Live) Video]` yields `live` then the rest. */
+/** Innermost first, regardless of bracket type: the pair whose closing bracket comes first. */
 function extractBrackets(text: string): { rest: string; segments: string[] } {
   const segments: string[] = [];
   let rest = text;
-  let match = BRACKETS.exec(rest);
-  while (match) {
-    const segment = (match[1] ?? match[2] ?? "").trim();
+  for (;;) {
+    const paren = PAREN_BRACKETS.exec(rest);
+    const square = SQUARE_BRACKETS.exec(rest);
+    const parenEnd = paren ? paren.index + paren[0].length : Infinity;
+    const squareEnd = square ? square.index + square[0].length : Infinity;
+    const match = parenEnd <= squareEnd ? paren : square;
+    if (!match) break;
+    const segment = (match[1] ?? "").trim();
     if (segment) segments.push(segment);
     rest = rest.slice(0, match.index) + " " + rest.slice(match.index + match[0].length);
-    match = BRACKETS.exec(rest);
   }
   return { rest, segments };
 }
@@ -95,11 +110,11 @@ export function parseTrackTitle(title: string): ParsedTrackTitle {
   const titlePart = collapse(parts[0] ?? "").replace(FEAT_TAIL, "").trim();
   for (const tail of parts.slice(1)) classify(tail, parsed);
 
-  parsed.searchText = collapse([titlePart, ...parsed.versionMarkers].join(" "));
-  parsed.core = stripPunctuation(titlePart) || parsed.aliases[0] || stripPunctuation(normalized);
   parsed.aliases = unique(parsed.aliases);
   parsed.versionMarkers = unique(parsed.versionMarkers);
   parsed.contextWords = unique(parsed.contextWords);
+  parsed.searchText = collapse([titlePart, ...parsed.versionMarkers].join(" "));
+  parsed.core = stripPunctuation(titlePart) || parsed.aliases[0] || stripPunctuation(normalized);
   return parsed;
 }
 

@@ -66,4 +66,27 @@ equal(
   "a version marker is carried into the query",
 );
 
+const mixed = parseTrackTitle("Song [Official (Live) Video]");
+equal(mixed.versionMarkers.join(","), "live", "inner live marker is extracted first");
+check(mixed.contextWords.includes("official"), "outer official is context");
+check(mixed.contextWords.includes("video"), "outer video is context");
+check(!mixed.aliases.includes("officiallivevideo"), "the outer alias does not swallow the inner marker");
+
+equal(
+  parseTrackTitle("Song (Live) - Live").searchText,
+  "song live",
+  "duplicate markers appear once in searchText",
+);
+
+equal(
+  parseTrackTitle("Song (Deluxe Edition)").versionMarkers.length,
+  0,
+  "edition is not an edit marker",
+);
+equal(
+  parseTrackTitle("Song (Alive)").versionMarkers.length,
+  0,
+  "alive is not a live marker",
+);
+
 console.log("addon/title: ok");
