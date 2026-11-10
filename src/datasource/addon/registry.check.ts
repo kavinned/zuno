@@ -169,10 +169,21 @@ equal(updated?.lastHealth, undefined, "update clears health");
 const updatedWrite = JSON.stringify(lastWrite(storage));
 check(!updatedWrite.includes("newsecret"), "the new secret is never persisted");
 
+const restrictive: AddonManifest = {
+  id: "torbox",
+  resources: ["search"],
+  settings: [],
+  allowDownloads: false,
+  checkValidLossless: true,
+};
+await registry.recordProbe(second.id, "ok", restrictive);
+equal(registry.get(second.id)?.allowDownloads, false, "a manifest probe applies allowDownloads");
+equal(registry.get(second.id)?.checkValidLossless, true, "a manifest probe applies checkValidLossless");
+
 await registry.recordProbe(second.id, "unreachable", null);
 const untouched = registry.get(second.id);
-equal(untouched?.allowDownloads, true, "an absent manifest leaves allowDownloads at its default");
-equal(untouched?.checkValidLossless, false, "an absent manifest leaves checkValidLossless at its default");
+equal(untouched?.allowDownloads, true, "an absent manifest restores the allowDownloads default");
+equal(untouched?.checkValidLossless, false, "an absent manifest restores the checkValidLossless default");
 equal(untouched?.manifestName, undefined, "an absent manifest leaves no manifest name");
 equal(untouched?.lastHealth, "unreachable", "an absent manifest still records health");
 

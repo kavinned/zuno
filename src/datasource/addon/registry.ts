@@ -167,6 +167,9 @@ export class AddonRegistry {
         next.allowDownloads = manifest.allowDownloads;
         next.checkValidLossless = manifest.checkValidLossless;
         next.lastManifestAt = Date.now();
+      } else {
+        next.allowDownloads = true;
+        next.checkValidLossless = false;
       }
       const sources = this.state.sources.map((source) => (source.id === id ? next : source));
       await this.commit(sources);
