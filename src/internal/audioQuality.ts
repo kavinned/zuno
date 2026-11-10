@@ -18,8 +18,9 @@ const DOWNLOAD_KEY = "audio-quality-download";
 const CHANGE_EVENT = "audio-quality-change";
 
 /**
- * Target bitrates in kbps. "high" has no target — it takes the best on offer, whatever that
- * is, rather than a number that could sit below a format YouTube starts serving later.
+ * Target bitrates in kbps. "high" and "lossless" have no target — they take the best on offer,
+ * whatever that is, rather than a number that could sit below a format YouTube starts serving
+ * later.
  */
 const QUALITY_TARGET_KBPS: Record<Exclude<AudioQuality, "high" | "lossless">, number> = {
   low: 64,
@@ -84,6 +85,12 @@ export function useDownloadQuality(): AudioQuality {
   return useSyncExternalStore(subscribe, getDownloadQuality, () => "high");
 }
 
+export function usesBestOfferedFormat(
+  quality: AudioQuality,
+): quality is "high" | "lossless" {
+  return quality === "high" || quality === "lossless";
+}
+
 /**
  * Picks the format that best matches a quality preference.
  *
@@ -100,7 +107,7 @@ export function selectFormatForQuality<T extends { bitrate?: number | null }>(
   if (formats.length === 0) return undefined;
 
   const ranked = [...formats].sort((left, right) => (right.bitrate ?? 0) - (left.bitrate ?? 0));
-  if (quality === "high" || quality === "lossless") return ranked[0];
+  if (usesBestOfferedFormat(quality)) return ranked[0];
 
   const targetBps = QUALITY_TARGET_KBPS[quality] * 1000;
   return ranked.reduce((best, format) => {

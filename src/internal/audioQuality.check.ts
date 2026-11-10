@@ -13,6 +13,7 @@ import {
   AUDIO_QUALITY_LABELS,
   getStreamingQuality,
   selectFormatForQuality,
+  usesBestOfferedFormat,
 } from "./audioQuality";
 
 function check(condition: boolean, message: string): void {
@@ -44,6 +45,12 @@ equal(
   "lossless label exists",
 );
 equal(getStreamingQuality(), "high", "new installs stay on high");
+
+// The resolver's MP4 preference must not bite either "best available" tier.
+equal(usesBestOfferedFormat("high"), true, "high uses the best offered format");
+equal(usesBestOfferedFormat("lossless"), true, "lossless uses the best offered format");
+equal(usesBestOfferedFormat("normal"), false, "normal keeps the MP4 preference");
+equal(usesBestOfferedFormat("low"), false, "low keeps the MP4 preference");
 
 // Normal and low snap to the tier nearest their target, not strictly below it.
 equal(selectFormatForQuality(full, "normal")?.bitrate, 131_000, "normal snaps to the ~128k tier");

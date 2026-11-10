@@ -100,6 +100,7 @@ import {
   getDownloadQuality,
   getStreamingQuality,
   selectFormatForQuality,
+  usesBestOfferedFormat,
   type AudioQuality,
 } from "../../internal/audioQuality";
 import {
@@ -5897,7 +5898,7 @@ export class YouTubeMusicDataSource extends DataSource {
            * better per bit. `low` and `normal` keep preferring MP4: they are picking a small file
            * and AAC is the safer container to hand a media element.
            */
-          const candidates = quality === "high" || mp4Formats.length === 0
+          const candidates = usesBestOfferedFormat(quality) || mp4Formats.length === 0
             ? audioFormats
             : mp4Formats;
           const format = selectFormatForQuality(candidates as Array<{ bitrate?: number }>, quality) as
