@@ -1464,6 +1464,9 @@ export class PlayerController {
             track.durationSec,
           );
         } else if (canFallBackToIframe) {
+          /* The addon load failed; the IFrame plays YouTube, so no verified addon format remains. */
+          audioInfo = undefined;
+          addonSubstitution = undefined;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to the YouTube player", {
             trackId: track.id,
             error: getErrorMessage(error),
