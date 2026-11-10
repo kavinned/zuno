@@ -1,4 +1,6 @@
-export type TrackSource = "youtube" | "local";
+import type { AddonTrackRef } from "./addon/types";
+
+export type TrackSource = "youtube" | "local" | "addon";
 
 export interface ArtistReference {
   id: string;
@@ -29,6 +31,7 @@ export interface Track {
   /** Carries an explicit-content badge. Absent means unknown, not "clean". */
   isExplicit?: boolean;
   localPath?: string;
+  addon?: AddonTrackRef;
 }
 
 export interface LyricLine {
