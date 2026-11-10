@@ -1,10 +1,19 @@
 import type { DataSource } from "../datasource/DataSource";
+import type { AddonService } from "../datasource/addon/service";
 import type { SearchResults, Track } from "../datasource/types";
+import { getStreamingQuality } from "../internal/audioQuality";
 import { isOnline } from "../internal/connectivity";
 import { searchDownloads } from "./offlineStore";
 
+type AddonSearch = Pick<AddonService, "search">;
+
+const EMPTY_RESULTS: SearchResults = { artists: [], tracks: [], albums: [], playlists: [] };
+
 export class SearchController {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly addons?: AddonSearch,
+  ) {}
 
   async search(
     query: string,
@@ -12,18 +21,64 @@ export class SearchController {
   ): Promise<SearchResults> {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) {
-      return { artists: [], tracks: [], albums: [], playlists: [] };
+      return { ...EMPTY_RESULTS };
     }
     if (!isOnline()) {
-      return { artists: [], tracks: searchDownloads(normalizedQuery), albums: [], playlists: [] };
+      return { ...EMPTY_RESULTS, tracks: searchDownloads(normalizedQuery) };
     }
-    if (this.dataSource.search) {
-      return this.dataSource.search(normalizedQuery, onUpdate);
-    }
-    const tracks = await this.searchTracks(normalizedQuery, (items) => {
-      onUpdate?.({ artists: [], tracks: items, albums: [], playlists: [] });
+
+    const addonPromise = this.searchAddons(normalizedQuery);
+    let latestYoutube = EMPTY_RESULTS;
+    let latestAddons: Track[] = [];
+    const mergeAddons = (base: SearchResults): SearchResults => ({
+      ...base,
+      tracks: [...base.tracks, ...latestAddons],
     });
-    return { artists: [], tracks, albums: [], playlists: [] };
+
+    /* The addon promise is only awaited when the caller has no other channel to receive it. */
+    const deliverLateAddons = (): void => {
+      if (!onUpdate) return;
+      void addonPromise.then((tracks) => {
+        latestAddons = tracks;
+        if (tracks.length > 0) onUpdate(mergeAddons(latestYoutube));
+      });
+    };
+
+    if (this.dataSource.search) {
+      const youtubeResults = await this.dataSource.search(
+        normalizedQuery,
+        onUpdate
+          ? (results) => {
+              latestYoutube = results;
+              onUpdate(mergeAddons(results));
+            }
+          : undefined,
+      );
+      latestYoutube = youtubeResults;
+      if (!onUpdate) {
+        latestAddons = await addonPromise;
+        return mergeAddons(youtubeResults);
+      }
+      deliverLateAddons();
+      return youtubeResults;
+    }
+
+    const tracks = await this.searchTracks(
+      normalizedQuery,
+      onUpdate
+        ? (items) => {
+            latestYoutube = { ...EMPTY_RESULTS, tracks: items };
+            onUpdate(mergeAddons(latestYoutube));
+          }
+        : undefined,
+    );
+    latestYoutube = { ...EMPTY_RESULTS, tracks };
+    if (!onUpdate) {
+      latestAddons = await addonPromise;
+      return mergeAddons(latestYoutube);
+    }
+    deliverLateAddons();
+    return latestYoutube;
   }
 
   async searchTracks(query: string, onUpdate?: (tracks: Track[]) => void): Promise<Track[]> {
@@ -40,5 +95,15 @@ export class SearchController {
     const normalizedQuery = query.trim();
     if (!normalizedQuery || !this.dataSource.getSearchSuggestions || !isOnline()) return [];
     return this.dataSource.getSearchSuggestions(normalizedQuery, onUpdate);
+  }
+
+  /** A failing addon is its own business; the service has already recorded its health. */
+  private async searchAddons(query: string): Promise<Track[]> {
+    if (!this.addons) return [];
+    try {
+      return await this.addons.search(query, getStreamingQuality());
+    } catch {
+      return [];
+    }
   }
 }

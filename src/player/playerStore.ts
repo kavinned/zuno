@@ -1,5 +1,11 @@
 import { useCallback, useRef, useSyncExternalStore } from "react";
+import { AddonRegistry } from "../datasource/addon/registry";
+import { AddonRowCache } from "../datasource/addon/rows";
+import { AddonService } from "../datasource/addon/service";
+import { appSettingsAddonStorage, keyringAddonSecrets } from "../datasource/addon/storage";
+import { probeAddonLength, tauriAddonRequest } from "../datasource/addon/transport";
 import { YouTubeMusicDataSource } from "../datasource/youtube/YouTubeMusicDataSource";
+import { getAudioEngineMode } from "../ui/settings/audioEngine";
 import { LibraryController } from "./LibraryController";
 import { PlayerController, type PlayerSession, type PlayerState } from "./PlayerController";
 import { SearchController } from "./SearchController";
@@ -7,15 +13,31 @@ import { TabManager } from "./TabManager";
 import { loadAppSession } from "./appSession";
 import { readSessionRestoreEnabled } from "../ui/settings/sessionRestore";
 import {
+  getOfflineTrack,
   hydrateOfflineStore,
+  isTrackDownloaded,
   setOfflineStreamResolver,
   startOfflineProgressFeed,
 } from "./offlineStore";
 
-const dataSource = new YouTubeMusicDataSource();
+export const addonRegistry = new AddonRegistry(appSettingsAddonStorage, keyringAddonSecrets);
+export const addonService = new AddonService({
+  registry: addonRegistry,
+  rows: new AddonRowCache(),
+  request: tauriAddonRequest,
+  probeLength: probeAddonLength,
+  // Milestone B replaces this with a real WASAPI capability probe.
+  outputCapable: () => false,
+  engine: () => getAudioEngineMode() === "rust" ? "rust" : "native",
+  isDownloaded: isTrackDownloaded,
+  getDownloadedTrack: getOfflineTrack,
+});
+void addonRegistry.ensureLoaded();
 
-export const libraryController = new LibraryController(dataSource);
-export const searchController = new SearchController(dataSource);
+const dataSource = new YouTubeMusicDataSource(addonService);
+
+export const libraryController = new LibraryController(dataSource, addonService);
+export const searchController = new SearchController(dataSource, addonService);
 /*
  * The offline queue needs a stream URL but must not depend on any particular data source, so
  * the source is injected here where both are already in scope.
