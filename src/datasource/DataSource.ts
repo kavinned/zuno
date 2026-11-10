@@ -62,6 +62,8 @@ export abstract class DataSource {
   searchTracks?(query: string, onUpdate?: (tracks: Track[]) => void): Promise<Track[]>;
   getSearchSuggestions?(query: string, onUpdate?: (suggestions: string[]) => void): Promise<string[]>;
   getStreamData?(track: Track): Promise<StreamData>;
+  /** Resolves the native-engine path explicitly, bypassing the Rust branch. */
+  getNativeStreamData?(track: Track): Promise<StreamData>;
   /**
    * Pre-pays whatever first-play latency can be paid before there is a play — e.g. warming a
    * lazily-created client or a slow one-time attestation. Fire-and-forget: called when the

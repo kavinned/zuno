@@ -56,6 +56,7 @@ import { mintPoToken, warmPoToken } from "./poToken";
 import { AuthExpiredError, DataSource, type StreamData } from "../DataSource";
 import type {
   AccountOption,
+  AddonPlaybackSource,
   GoogleAccountOption,
   ArtistNotificationLevel,
   BrowseLink,
@@ -115,6 +116,7 @@ import {
   tauriFetch,
 } from "./tauriFetch";
 import { parseVtt } from "./localVtt";
+import { isAddonTrackId } from "../addon/url";
 
 type ClientLabel = "music" | "web" | "download";
 type NativeAudioPayload = {
@@ -438,6 +440,8 @@ const PLAYLIST_EMPTY_RETRY_DELAYS_MS = [0, 600, 1_500];
 class YouTubeMusicAuthError extends AuthExpiredError {}
 
 export class YouTubeMusicDataSource extends DataSource {
+  /** Absent when no addon sources are configured; addon ids then fail instead of guessing. */
+  private readonly addons?: AddonPlaybackSource;
   private musicClientPromise: Promise<Innertube> | null = null;
   private webClientPromise: Promise<Innertube> | null = null;
   private downloadClientPromise: Promise<Innertube> | null = null;
@@ -493,6 +497,11 @@ export class YouTubeMusicDataSource extends DataSource {
   private readonly artistSubscriptionOverrides = new Map<string, { subscribed: boolean; expiresAt: number }>();
 
   private isEvaluatorInstalled = false;
+
+  constructor(addons?: AddonPlaybackSource) {
+    super();
+    this.addons = addons;
+  }
 
   private async ensureYouTubeI(): Promise<typeof import("youtubei.js")> {
     const module = await loadYouTubeI();
@@ -4716,6 +4725,17 @@ export class YouTubeMusicDataSource extends DataSource {
   async getTrack(id: string): Promise<Track> {
     const trackId = id;
     if (!trackId) throw new Error("A track id is required.");
+    /*
+     * Before any YouTube cache lookup or fabricated-track fallback: an addon id is not a
+     * YouTube id, so falling through would either cache a wrong entry or invent a playable
+     * looking track. Service errors are the answer here and are allowed to propagate.
+     */
+    if (isAddonTrackId(trackId)) {
+      if (!this.addons) {
+        throw new Error("That track belongs to an addon source that is no longer configured.");
+      }
+      return this.addons.getTrack(trackId);
+    }
     const cacheKey = `youtube-music:track:v1:${trackId}`;
     const cached = await getCachedJson<Track>(cacheKey);
 
@@ -6484,6 +6504,15 @@ export class YouTubeMusicDataSource extends DataSource {
       }
     }
 
+    /*
+     * An addon track has no YouTube format ladder to walk. The offline copy above was the only
+     * thing worth trying first; without one, resolve through the addon service only — never
+     * `resolveStreamUrl`, which would send the composite id to YouTube.
+     */
+    if (track.source === "addon") {
+      return this.getNativeStreamData(track);
+    }
+
     const { url: streamUrl, mimeType: streamMimeType } = await this.resolveStreamUrl(track);
 
     logInternalInfo("YouTubeMusicDataSource.getStreamData download start", {
@@ -6497,6 +6526,7 @@ export class YouTubeMusicDataSource extends DataSource {
       // The signed URL belongs to this authenticated session; without the cookie the media
       // request is anonymous and googlevideo refuses it.
       cookie: this.musicCookie,
+      style: "youtube",
     });
     if (payload.byteLength === 0) {
       throw new Error("Audio download returned no data.");
@@ -6546,6 +6576,24 @@ export class YouTubeMusicDataSource extends DataSource {
       return { mimeType, rustSource: { kind: "offline", trackId: track.id, mimeType } };
     }
 
+    if (track.source === "addon") {
+      const addons = this.addons;
+      if (!addons) {
+        throw new Error("That track belongs to an addon source that is no longer configured.");
+      }
+      const stream = await addons.resolveTrack(track, getStreamingQuality());
+      return {
+        mimeType: stream.mimeType,
+        rustSource: {
+          kind: "stream",
+          url: stream.url,
+          mimeType: stream.mimeType,
+          contentLength: stream.contentLength,
+          style: "addon",
+        },
+      };
+    }
+
     const { url, mimeType, cookie } = await this.resolveStreamUrl(track);
     logInternalInfo("YouTubeMusicDataSource.getRustStreamData resolved", {
       trackId: track.id,
@@ -6556,6 +6604,35 @@ export class YouTubeMusicDataSource extends DataSource {
       mimeType,
       rustSource: { kind: "stream", url, mimeType, cookie },
     };
+  }
+
+  /**
+   * The native-engine path, resolved explicitly rather than by reading the engine setting.
+   *
+   * `getStreamData` branches on `usesRustAudioEngine()`, which is right for a fresh load but
+   * not for a caller that already knows it needs native — the player's addon fallback, or an
+   * IFrame-configured session playing an addon row. Non-addon tracks have no such caller and
+   * simply take the ordinary path.
+   */
+  async getNativeStreamData(track: Track): Promise<StreamData> {
+    if (track.source !== "addon") return this.getStreamData(track);
+
+    const addons = this.addons;
+    if (!addons) {
+      throw new Error("That track belongs to an addon source that is no longer configured.");
+    }
+    const stream = await addons.resolveTrack(track, getStreamingQuality(), { engine: "native" });
+    const payload = await invoke<NativeAudioSourcePayload>("fetch_audio_source", {
+      url: stream.url,
+      trackId: track.id,
+      mimeType: stream.mimeType,
+      contentLength: stream.contentLength,
+      style: "addon",
+    });
+    if (payload.byteLength === 0) {
+      throw new Error("Audio download returned no data.");
+    }
+    return { mimeType: payload.mimeType, sourceUrl: payload.url };
   }
 
   /**

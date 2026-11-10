@@ -1,3 +1,5 @@
+import type { AudioQuality } from "../internal/audioQuality";
+import type { ResolvedAddonStream } from "./addon/service";
 import type { AddonTrackRef } from "./addon/types";
 
 export type TrackSource = "youtube" | "local" | "addon";
@@ -290,6 +292,31 @@ export interface LibrarySnapshot {
  * `datasource/` may import upward. Mirrors `NativeAudioSource` in `src-tauri/src/lib.rs`.
  */
 export type RustAudioSource =
-  | { kind: "stream"; url: string; mimeType: string; cookie?: string }
+  | {
+      kind: "stream";
+      url: string;
+      mimeType: string;
+      cookie?: string;
+      /** Byte size when the source knows it, so Rust can size the transfer up front. */
+      contentLength?: number;
+      /** Which resolver produced the URL. Absent means YouTube, as it always did. */
+      style?: "youtube" | "addon";
+    }
   | { kind: "offline"; trackId: string; mimeType: string }
   | { kind: "file"; path: string };
+
+/**
+ * The addon behaviour playback needs from the addon service.
+ *
+ * Narrow on purpose: tests fake this without constructing the service's registry, rows and
+ * transport, and the data source never imports the concrete service.
+ */
+export interface AddonPlaybackSource {
+  getTrack(id: string): Promise<Track>;
+  resolveTrack(
+    track: Track,
+    quality: AudioQuality,
+    options?: { engine?: "rust" | "native" },
+  ): Promise<ResolvedAddonStream>;
+  allowDownloads(track: Track): boolean;
+}
