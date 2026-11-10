@@ -97,6 +97,7 @@ interface Script {
 
 class FakeClient implements AddonClientLike {
   readonly searchQueries: string[] = [];
+  readonly searchQualities: AudioQuality[] = [];
   readonly searchOptions: Array<AddonClientCallOptions | undefined> = [];
   getManifestCalls = 0;
   searchCalls = 0;
@@ -113,11 +114,12 @@ class FakeClient implements AddonClientLike {
 
   async search(
     query: string,
-    _quality: AudioQuality,
+    quality: AudioQuality,
     options?: AddonClientCallOptions,
   ): Promise<AddonSearchRow[]> {
     this.searchCalls += 1;
     this.searchQueries.push(query);
+    this.searchQualities.push(quality);
     this.searchOptions.push(options);
     if (this.script.searchError !== undefined) throw this.script.searchError;
     return this.script.searchResult ?? [];
@@ -252,6 +254,16 @@ async function setup(options: SetupOptions): Promise<Harness> {
   const rows = new FakeRows();
   const created: FakeClient[] = [];
   const scriptFor = options.script ?? (() => ({}));
+  const clientsById = new Map<string, FakeClient>();
+  const defaultFactory = (source: AddonSourceConfig): AddonClientLike => {
+    const key = `${source.id}|${source.baseUrl}`;
+    const existing = clientsById.get(key);
+    if (existing !== undefined) return existing;
+    const client = new FakeClient(source.id, scriptFor(source));
+    clientsById.set(key, client);
+    created.push(client);
+    return client;
+  };
 
   const service = new AddonService({
     registry,
@@ -262,13 +274,21 @@ async function setup(options: SetupOptions): Promise<Harness> {
     engine: () => options.engine ?? "native",
     isDownloaded: (trackId) => options.downloaded?.has(trackId) === true,
     getDownloadedTrack: (trackId) => options.downloadedTracks?.get(trackId),
-    clientFactory: options.clientFactory ?? ((source) => {
-      const client = new FakeClient(source.id, scriptFor(source));
-      created.push(client);
-      return client;
-    }),
+    clientFactory: options.clientFactory ?? defaultFactory,
     now: () => 0,
   });
+
+  /* A check may override a fake client's methods before the first service call, so every
+     source the service would contact gets its client up front; nothing is called yet. */
+  if (options.clientFactory === undefined) {
+    const outputCapable = options.outputCapable ?? true;
+    for (const source of registry.list()) {
+      const gated = source.checkValidLossless && !outputCapable;
+      if (source.enabled && source.baseUrl !== "" && source.lastHealth !== "rejected" && !gated) {
+        defaultFactory(source);
+      }
+    }
+  }
 
   return { service, registry, rows, created };
 }
@@ -914,6 +934,149 @@ for (const [error, expected] of [
   const second = await service.search("again", "high");
   equal(second.length, 2, "a recovered source is searched again");
   equal(second[0].addon?.sourceId, failingId, "source order is preserved");
+}
+
+const youtubeTarget: Track = {
+  id: "yt-target",
+  source: "youtube",
+  title: 'Gehra Hua (From "Dhurandhar")',
+  artist: "Arijit Singh",
+  album: "Dhurandhar",
+  durationSec: 362,
+};
+
+function matchRow(overrides: Partial<AddonSearchRow> = {}): AddonSearchRow {
+  return searchRow({
+    title: "Gehra Hua",
+    artist: "Arijit Singh",
+    album: "Dhurandhar",
+    durationSec: 362,
+    format: "flac",
+    ...overrides,
+  });
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://match.example/secret" }],
+    script: () => ({
+      searchResult: [matchRow({ id: "tidal:1" })],
+      streamAnswer: () => ({ url: "https://cdn.example/a.flac", format: "flac", sampleRate: 44100 }),
+    }),
+  });
+
+  const match = await service.findLosslessMatch(youtubeTarget);
+  check(match !== null, "a lossless match resolves");
+  equal(match?.track.source, "addon", "the match is an addon track");
+  equal(match?.stream.lossless, true, "the accepted stream is lossless");
+  equal(match?.stream.sampleRateHz, 44100, "stream metadata is carried");
+  equal(created[0].searchQualities[0], "lossless", "substitution searches the lossless tier");
+  equal(
+    created[0].searchQueries[0],
+    "gehra hua arijit singh",
+    "the first query is title without packaging plus primary artist",
+  );
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://lossy.example/secret" }],
+    script: () => ({ searchResult: [matchRow({ format: "mp3" })] }),
+  });
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a lossy row is not a lossless match");
+  equal(created[0].streamCalls, 0, "no stream is resolved for a lossy row");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://liar.example/secret" }],
+    script: () => ({
+      searchResult: [matchRow()],
+      streamAnswer: () => ({ url: "https://cdn.example/a.mp3", format: "mp3" }),
+    }),
+  });
+
+  equal(
+    await service.findLosslessMatch(youtubeTarget),
+    null,
+    "a FLAC row that resolves to MP3 is a miss",
+  );
+}
+
+{
+  const sourceId = SOURCE_A;
+  const slow = new FakeClient(sourceId, {});
+  slow.search = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return [matchRow()];
+  };
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://slow.example/secret" }],
+    clientFactory: () => slow,
+  });
+
+  const startedAt = Date.now();
+  equal(
+    await service.findLosslessMatch(youtubeTarget, { budgetMs: 20 }),
+    null,
+    "a slow addon yields no match",
+  );
+  check(Date.now() - startedAt < 500, "the budget bounds the wait");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://query.example/secret" }],
+    script: () => ({}),
+  });
+  created[0].search = async (query, quality) => {
+    created[0].searchQueries.push(query);
+    created[0].searchQualities.push(quality);
+    return query === "gehra hua arijit singh" ? [] : [matchRow()];
+  };
+  created[0].resolveStream = async () => ({ url: "https://cdn.example/a.flac", format: "flac" });
+
+  const match = await service.findLosslessMatch(youtubeTarget);
+  check(match !== null, "the second query finds the match");
+  equal(created[0].searchQueries.length, 2, "queries run in order");
+  equal(created[0].searchQueries[1], "gehra hua", "the second query drops the artist");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service, created } = await setup({
+    sources: [{
+      id: sourceId,
+      baseUrl: "https://gated-substitution.example/secret",
+      checkValidLossless: true,
+    }],
+    outputCapable: false,
+  });
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a gated source yields no match");
+  equal(created.length, 0, "a gated source is never contacted");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://candidates.example/secret" }],
+    script: () => ({
+      manifest: manifest(),
+      searchResult: [matchRow({ id: "first" }), matchRow({ id: "second" })],
+      streamError: (trackId) =>
+        trackId === "first" ? new AddonRequestError("miss", 404) : undefined,
+      streamAnswer: () => ({ url: "https://cdn.example/second.flac", format: "flac" }),
+    }),
+  });
+
+  const match = await service.findLosslessMatch(youtubeTarget);
+  equal(match?.track.addon?.trackId, "second", "a failed candidate falls through to the next");
 }
 
 console.log("addon/service: ok");

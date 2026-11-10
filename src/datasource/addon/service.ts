@@ -1,9 +1,16 @@
 import type { AudioQuality } from "../../internal/audioQuality";
+import { logInternalInfo } from "../../internal/logging";
 import type { Track } from "../types";
 import { AddonClient, AddonRequestError, type AddonClientCallOptions } from "./client";
 import { acceptAddonStream, type AddonEngine } from "./format";
+import {
+  rankAddonCandidates,
+  type MatchCandidate,
+  type MatchTarget,
+} from "./matcher";
 import type { AddonRegistry, AddonSourcePatch } from "./registry";
 import type { AddonRowCache, CachedAddonRow } from "./rows";
+import { buildSearchQueries, parseTrackTitle } from "./title";
 import type { AddonLengthProbe, AddonRequest } from "./transport";
 import type {
   AddonHealth,
@@ -41,6 +48,16 @@ export interface ResolvedAddonStream {
   bitDepth?: number;
   kbps?: number;
   expiresAt?: number;
+}
+
+export interface AddonSubstitutionMatch {
+  track: Track;
+  stream: ResolvedAddonStream;
+}
+
+export interface AddonSubstitutionOptions {
+  engine?: AddonEngine;
+  budgetMs?: number;
 }
 
 export type AddonServiceRows = Pick<
@@ -161,6 +178,33 @@ function streamFailureMessage(reason: string): string {
   return STREAM_FAILURES[reason] ?? "The addon stream is not playable.";
 }
 
+const SUBSTITUTION_BUDGET_MS = 2500;
+
+async function withinDeadline<T>(
+  work: Promise<T>,
+  remainingMs: number,
+  controller: AbortController,
+): Promise<T | undefined> {
+  if (remainingMs <= 0) {
+    controller.abort();
+    /* The work already started; without a handler a late rejection goes unhandled. */
+    void work.catch(() => undefined);
+    return undefined;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(undefined);
+    }, remainingMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class AddonService {
   private readonly deps: AddonServiceDeps;
   private readonly clients = new Map<string, AddonClientLike>();
@@ -276,7 +320,7 @@ export class AddonService {
   async resolveTrack(
     track: Track,
     quality: AudioQuality,
-    options: { engine?: AddonEngine } = {},
+    options: { engine?: AddonEngine; signal?: AbortSignal } = {},
   ): Promise<ResolvedAddonStream> {
     const { registry, rows } = this.deps;
     await registry.ensureLoaded();
@@ -299,7 +343,7 @@ export class AddonService {
     const client = this.clientFor(source);
     let answer: AddonStreamAnswer;
     try {
-      answer = await client.resolveStream(ref.trackId, quality);
+      answer = await client.resolveStream(ref.trackId, quality, { signal: options.signal });
     } catch (error) {
       if (error instanceof AddonRequestError && error.kind === "miss" && row.streamUrl !== undefined) {
         answer = answerFromRow(row);
@@ -346,6 +390,106 @@ export class AddonService {
     return resolved;
   }
 
+  /**
+   * Best-effort lossless substitution for a non-addon track: searches every eligible source
+   * within one budget, ranks the rows, and resolves the first candidate that yields a
+   * lossless stream. A miss is null, never an error.
+   */
+  async findLosslessMatch(
+    target: Track,
+    options: AddonSubstitutionOptions = {},
+  ): Promise<AddonSubstitutionMatch | null> {
+    const { registry, rows } = this.deps;
+    await registry.ensureLoaded();
+    const startedAt = Date.now();
+    const deadline = startedAt + (options.budgetMs ?? SUBSTITUTION_BUDGET_MS);
+    const sources = registry.list().filter((source) => this.isEligible(source));
+    if (sources.length === 0) return null;
+
+    const parts = parseTrackTitle(target.title);
+    const queries = buildSearchQueries(parts, target.artists?.[0]?.name ?? target.artist);
+    const matchTarget: MatchTarget = {
+      title: target.title,
+      artist: target.artist,
+      artists: target.artists,
+      album: target.album,
+      durationSec: target.durationSec,
+    };
+    const sourceById = new Map(sources.map((source) => [source.id, source]));
+    const fingerprints = new Map<string, string>();
+    let best: { sourceId: string; score: number } | undefined;
+
+    for (const query of queries) {
+      if (Date.now() >= deadline) break;
+
+      const searched = await Promise.all(
+        sources.map(async (source) => ({
+          source,
+          found: await this.substitutionSearch(source, query, deadline),
+        })),
+      );
+      const candidates: MatchCandidate[] = [];
+      for (const { source, found } of searched) {
+        for (const row of found) {
+          candidates.push({ sourceId: source.id, sourceOrder: source.order, row });
+        }
+      }
+
+      const skipped = new Set<string>();
+      for (const { candidate, score } of rankAddonCandidates(matchTarget, candidates)) {
+        if (Date.now() >= deadline) break;
+        if (skipped.has(candidate.sourceId)) continue;
+        if (best === undefined || score > best.score) {
+          best = { sourceId: candidate.sourceId, score };
+        }
+        const source = sourceById.get(candidate.sourceId);
+        if (source === undefined) continue;
+
+        let fingerprint = fingerprints.get(source.id);
+        if (fingerprint === undefined) {
+          fingerprint = await sourceFingerprint(source.baseUrl);
+          fingerprints.set(source.id, fingerprint);
+        }
+        const [track] = await rows.rememberMany([rowToRef(source, candidate.row)], fingerprint);
+
+        const controller = new AbortController();
+        let stream: ResolvedAddonStream | undefined;
+        try {
+          stream = await withinDeadline(
+            this.resolveTrack(track, "lossless", {
+              engine: options.engine,
+              signal: controller.signal,
+            }),
+            deadline - Date.now(),
+            controller,
+          );
+        } catch (error) {
+          const kind = error instanceof AddonRequestError ? error.kind : undefined;
+          if (
+            kind === "rate-limited"
+            || kind === "unreachable"
+            || kind === "timeout"
+            || kind === "server"
+          ) {
+            const health = healthForError(error);
+            if (health !== null) await this.recordHealth(source, health);
+            skipped.add(source.id);
+          }
+          continue;
+        }
+        if (stream === undefined) break;
+        if (stream.lossless) return { track, stream };
+      }
+    }
+
+    logInternalInfo("addon.substitution.miss", {
+      sourceId: best?.sourceId,
+      score: best?.score,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return null;
+  }
+
   allowDownloads(track: Track): boolean {
     const ref = track.addon;
     if (ref === undefined) return false;
@@ -390,6 +534,27 @@ export class AddonService {
       const fingerprint = await sourceFingerprint(source.baseUrl);
       const refs = rows.map((row) => rowToRef(source, row));
       return await this.deps.rows.rememberMany(refs, fingerprint);
+    } catch (error) {
+      const health = healthForError(error);
+      if (health !== null) await this.recordHealth(source, health);
+      return [];
+    }
+  }
+
+  /** A substitution search never fails the attempt: a deadline hit or an error yields no rows. */
+  private async substitutionSearch(
+    source: AddonSourceConfig,
+    query: string,
+    deadline: number,
+  ): Promise<AddonSearchRow[]> {
+    const controller = new AbortController();
+    try {
+      const found = await withinDeadline(
+        this.clientFor(source).search(query, "lossless", { signal: controller.signal }),
+        deadline - Date.now(),
+        controller,
+      );
+      return found ?? [];
     } catch (error) {
       const health = healthForError(error);
       if (health !== null) await this.recordHealth(source, health);
