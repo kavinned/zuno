@@ -11,7 +11,7 @@ import {
  * connection; downloading is capped to save disk. Someone on mobile data who wants good
  * offline copies is a normal case, and a single setting cannot express it.
  */
-export type AudioQuality = "low" | "normal" | "high";
+export type AudioQuality = "low" | "normal" | "high" | "lossless";
 
 const STREAMING_KEY = "audio-quality-streaming";
 const DOWNLOAD_KEY = "audio-quality-download";
@@ -21,7 +21,7 @@ const CHANGE_EVENT = "audio-quality-change";
  * Target bitrates in kbps. "high" has no target — it takes the best on offer, whatever that
  * is, rather than a number that could sit below a format YouTube starts serving later.
  */
-const QUALITY_TARGET_KBPS: Record<Exclude<AudioQuality, "high">, number> = {
+const QUALITY_TARGET_KBPS: Record<Exclude<AudioQuality, "high" | "lossless">, number> = {
   low: 64,
   normal: 128,
 };
@@ -30,10 +30,11 @@ export const AUDIO_QUALITY_LABELS: Record<AudioQuality, string> = {
   low: "Low (~64 kbps)",
   normal: "Normal (~128 kbps)",
   high: "High (best available)",
+  lossless: "Lossless (addon when available)",
 };
 
 function isAudioQuality(value: unknown): value is AudioQuality {
-  return value === "low" || value === "normal" || value === "high";
+  return value === "low" || value === "normal" || value === "high" || value === "lossless";
 }
 
 function read(key: string): AudioQuality {
@@ -99,7 +100,7 @@ export function selectFormatForQuality<T extends { bitrate?: number | null }>(
   if (formats.length === 0) return undefined;
 
   const ranked = [...formats].sort((left, right) => (right.bitrate ?? 0) - (left.bitrate ?? 0));
-  if (quality === "high") return ranked[0];
+  if (quality === "high" || quality === "lossless") return ranked[0];
 
   const targetBps = QUALITY_TARGET_KBPS[quality] * 1000;
   return ranked.reduce((best, format) => {

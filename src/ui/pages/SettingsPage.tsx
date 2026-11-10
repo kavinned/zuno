@@ -1616,7 +1616,7 @@ export function SettingsPage({
 
             <SettingRow
               title="Streaming quality"
-              description="Applies to songs played over the network. Lower uses less data."
+              description="Applies to songs played over the network. Lossless uses a verified addon rendition when one exists, and the best YouTube stream otherwise."
             >
               {(labelId) => (
                 <Select

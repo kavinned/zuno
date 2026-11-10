@@ -138,6 +138,7 @@ const TIER_BY_QUALITY: Record<AudioQuality, string> = {
   low: "LOW",
   normal: "HIGH",
   high: "HIGH",
+  lossless: "LOSSLESS",
 };
 
 const TIER_SYNONYMS: Record<string, readonly string[]> = {

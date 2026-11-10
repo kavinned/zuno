@@ -83,4 +83,33 @@ const defaults = parseManifest({
 equal(JSON.stringify(addonQualityParams(defaults, "high")), JSON.stringify([["quality", "flac"], ["region", "us"]]), "unknown tier falls back to first option and preserves other defaults");
 check(!JSON.stringify(addonQualityParams(defaults, "high")).includes("atmos"), "atmos never sent");
 
+const losslessManifest = parseManifest({
+  id: "x",
+  settings: [{
+    key: "quality",
+    default: "lossless",
+    options: [{ value: "lossless" }, { value: "high" }],
+  }],
+});
+equal(
+  JSON.stringify(addonQualityParams(losslessManifest, "lossless")),
+  JSON.stringify([["quality", "lossless"]]),
+  "lossless exact option wins",
+);
+equal(
+  JSON.stringify(addonQualityParams(null, "lossless")),
+  JSON.stringify([["quality", "LOSSLESS"]]),
+  "no manifest sends LOSSLESS",
+);
+
+const flacOnly = parseManifest({
+  id: "x",
+  settings: [{ key: "quality", options: [{ value: "mp3" }, { value: "flac" }] }],
+});
+equal(
+  JSON.stringify(addonQualityParams(flacOnly, "lossless")),
+  JSON.stringify([["quality", "flac"]]),
+  "lossless negotiates the flac synonym",
+);
+
 console.log("addon/manifest: ok");
