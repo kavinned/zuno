@@ -80,7 +80,7 @@ function isTimeoutFailure(error: unknown): boolean {
   return /timed?\s*out|timeout/i.test(message);
 }
 
-function serverFailureReason(status: number): AddonRequestErrorKind {
+function failureKindForStatus(status: number): AddonRequestErrorKind {
   return status >= 500 ? "server" : "rejected";
 }
 
@@ -182,7 +182,7 @@ export class AddonClient {
   private interpretManifest(response: AddonRequestResult): AddonManifest | null {
     if (response.status === 404) return null;
     if (response.status !== 200) {
-      throw new AddonRequestError(serverFailureReason(response.status), response.status);
+      throw new AddonRequestError(failureKindForStatus(response.status), response.status);
     }
     let value: unknown;
     try {
@@ -202,7 +202,7 @@ export class AddonClient {
 
   private interpretSearch(response: AddonRequestResult): AddonSearchRow[] {
     if (response.status !== 200) {
-      throw new AddonRequestError(serverFailureReason(response.status), response.status);
+      throw new AddonRequestError(failureKindForStatus(response.status), response.status);
     }
     let value: unknown;
     try {
@@ -218,7 +218,7 @@ export class AddonClient {
       throw new AddonRequestError("miss", response.status);
     }
     if (response.status !== 200) {
-      throw new AddonRequestError(serverFailureReason(response.status), response.status);
+      throw new AddonRequestError(failureKindForStatus(response.status), response.status);
     }
     let value: unknown;
     try {
