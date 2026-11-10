@@ -3,6 +3,7 @@ import { shallowEqual, usePlayerSelector } from "../../../player/playerStore";
 import { playerController } from "../../../player/playerStore";
 import { playerUIStore, usePlayerUIState } from "../../stores/playerUIStore";
 import { formatMinutesSeconds } from "@/lib/utils";
+import { AddonBadge } from "../TrackRow";
 
 /*
  * Deliberately NOT beUI's RangeSlider: that component snaps to discrete steps, while
@@ -269,6 +270,9 @@ export function SeekBar() {
       <span className="min-w-10 shrink-0 text-xs tabular-nums text-muted-foreground">
         {formatTime(duration)}
       </span>
+      {state.currentTrack?.source === "addon" && (
+        <AddonBadge format={state.currentTrack.addon?.format} />
+      )}
     </div>
   );
 }
