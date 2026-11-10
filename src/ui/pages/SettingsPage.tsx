@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { RangeSlider } from "@/components/motion/range-slider";
 import { setEqualizerEnabled, useEqualizerEnabled } from "../settings/equalizer";
 import { EqualizerPanel } from "../components/Equalizer";
+import { AddonSourcesSettings } from "../settings/AddonSourcesSettings";
 import {
   MAX_CROSSFADE_SEC,
   setCrossfadeSec,
@@ -2212,6 +2213,8 @@ export function SettingsPage({
               onCheckedChange={setSessionRestoreEnabled}
             />
           </section>
+
+          <AddonSourcesSettings />
         </div>
       )}
 
