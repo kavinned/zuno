@@ -114,6 +114,49 @@ const noSleep = async (): Promise<void> => {};
 }
 
 {
+  const slept: number[] = [];
+  const transport = fakeTransport(sequence({ status: 503, body: "", retryAfter: "2" }, { status: 200, body: tracksBody }));
+  const client = new AddonClient(source, {
+    request: transport.request,
+    sleep: async (ms) => { slept.push(ms); },
+    now: () => 0,
+  });
+  const rows = await client.search("gehra", "high");
+  equal(rows.length, 1, "503 Retry-After: search succeeds after the retry");
+  equal(transport.urls.length, 2, "503 Retry-After: one retry");
+  equal(JSON.stringify(slept), JSON.stringify([2000]), "503 honours Retry-After");
+}
+
+{
+  const slept: number[] = [];
+  const transport = fakeTransport(sequence({ status: 503, body: "", retryAfter: "30" }, { status: 200, body: tracksBody }));
+  const client = new AddonClient(source, {
+    request: transport.request,
+    sleep: async (ms) => { slept.push(ms); },
+    now: () => 0,
+  });
+  await client.search("gehra", "high");
+  equal(JSON.stringify(slept), JSON.stringify([8000]), "503 Retry-After capped at 8000 ms");
+}
+
+{
+  const slept: number[] = [];
+  const transport = fakeTransport(sequence(
+    { status: 503, body: "" },
+    { status: 503, body: "" },
+    { status: 200, body: tracksBody },
+  ));
+  const client = new AddonClient(source, {
+    request: transport.request,
+    sleep: async (ms) => { slept.push(ms); },
+    now: () => 0,
+  });
+  await client.search("gehra", "high");
+  equal(JSON.stringify(slept), JSON.stringify([500, 2000]), "503 without Retry-After backs off 500 then 2000");
+  equal(transport.urls.length, 3, "503 without Retry-After: two retries");
+}
+
+{
   const transport = fakeTransport(() => ({ status: 503, body: "" }));
   const client = new AddonClient(source, { request: transport.request, sleep: noSleep, now: () => 0 });
   await expectKind(client.search("gehra", "high"), "server", "5xx exhaustion");

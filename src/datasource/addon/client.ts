@@ -259,7 +259,7 @@ export class AddonClient {
         if (attempt === MAX_ATTEMPTS - 1) {
           throw new AddonRequestError("server", response.status);
         }
-        await this.sleepThenCheck(retryDelay(attempt), signal);
+        await this.sleepThenCheck(retryAfterMs(response.retryAfter) ?? retryDelay(attempt), signal);
         continue;
       }
 
