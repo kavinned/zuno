@@ -141,7 +141,9 @@ export function AddonSourcesSettings() {
       .then(() => {
         if (cancelled) return;
         for (const source of addonRegistry.list()) {
-          if (!source.enabled) continue;
+          /* No stored URL means the secret is gone and hydrate already calls it "Not usable";
+             probing it would only replace that with a vaguer "Unreachable". */
+          if (!source.enabled || source.baseUrl === "") continue;
           void addonService.probeSource(source.id).catch(() => undefined);
         }
       })
@@ -324,7 +326,10 @@ export function AddonSourcesSettings() {
               type="text"
               value={label}
               disabled={saving}
-              onChange={(event) => setLabel(event.target.value)}
+              onChange={(event) => {
+                setLabel(event.target.value);
+                setError(null);
+              }}
             />
           </label>
           <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
