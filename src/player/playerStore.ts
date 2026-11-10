@@ -52,7 +52,13 @@ setOfflineStreamResolver((track, quality) => {
     resolveDownloadUrl?: (
       t: typeof track,
       q: typeof quality,
-    ) => Promise<{ url: string; mimeType: string; cookie?: string }>;
+    ) => Promise<{
+      url: string;
+      mimeType: string;
+      cookie?: string;
+      contentLength?: number;
+      style?: "youtube" | "addon";
+    }>;
   }).resolveDownloadUrl;
   if (!resolver) throw new Error("Downloads are unavailable for this source.");
   return resolver.call(dataSource, track, quality);

@@ -348,7 +348,13 @@ async function backfillMissingArtwork(): Promise<void> {
 type StreamUrlResolver = (
   track: Track,
   quality: AudioQuality,
-) => Promise<{ url: string; mimeType: string; cookie?: string }>;
+) => Promise<{
+  url: string;
+  mimeType: string;
+  cookie?: string;
+  contentLength?: number;
+  style?: "youtube" | "addon";
+}>;
 
 let resolveStreamUrl: StreamUrlResolver | null = null;
 
@@ -445,8 +451,17 @@ async function pump(): Promise<void> {
 
       try {
         logInternalInfo("offlineStore.download start", { trackId, title: track.title });
-        const { url, mimeType, cookie } = await resolveStreamUrl(track, getDownloadQuality());
-        const byteLength = await invoke<number>("offline_audio_save", { url, trackId, cookie });
+        const { url, mimeType, cookie, contentLength, style } =
+          await resolveStreamUrl(track, getDownloadQuality());
+        const byteLength = await invoke<number>("offline_audio_save", {
+          url,
+          trackId,
+          cookie,
+          // YouTube is the Rust command's default, but the two providers fetch ranges
+          // differently, so it is sent explicitly rather than inferred.
+          style: style ?? "youtube",
+          contentLength,
+        });
         logInternalInfo("offlineStore.download complete", { trackId, byteLength });
         const hasArtwork = await saveArtwork(track);
         pendingTracks.delete(trackId);

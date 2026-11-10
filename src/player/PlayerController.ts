@@ -1335,7 +1335,14 @@ export class PlayerController {
        * never reached at all.
        */
       const isDownloaded = isTrackDownloaded(track.id);
-      const useNativeAudio = this.audioEngine.usesNativeAudio() || isDownloaded;
+      /*
+       * An addon track on an engine that is not Rust has to take the native element directly.
+       * Its id is composite (`sourceId.…`) and means nothing to YouTube, so the IFrame player
+       * would be asked to cue a video that does not exist; `getStreamData` resolves the addon
+       * stream (or its offline copy) and the native element plays that.
+       */
+      const addonNativeOnly = track.source === "addon" && !this.audioEngine.usesRustAudio();
+      const useNativeAudio = this.audioEngine.usesNativeAudio() || isDownloaded || addonNativeOnly;
       /*
        * A warmed track skips the whole resolve-and-download round trip, which is the entire
        * wait a listener feels when they press next. Claimed rather than read: it is one slot,
@@ -1356,7 +1363,8 @@ export class PlayerController {
        * and falling back for a *download* would stream the online copy of a track the user
        * saved on purpose.
        */
-      const canFallBackToIframe = this.audioEngine.usesRustAudio() && !isDownloaded;
+      const canFallBackToIframe = this.audioEngine.usesRustAudio() && !isDownloaded
+        && track.source !== "addon";
       /*
        * The mirror case: the embed is refused not because Google won't resolve the track but
        * because its owner disallows embedded playback at all (error 101/150) — a restriction
@@ -1365,6 +1373,12 @@ export class PlayerController {
        * gets one try at native audio before giving up.
        */
       const canFallBackToNative = !useNativeAudio && !isDownloaded;
+      /*
+       * Rust's decoder has a narrower codec set than the native element, and an addon is free
+       * to offer something only one of them handles. A failed Rust load therefore gets one
+       * retry on the native path — never the IFrame, which cannot play a composite id.
+       */
+      const canRetryAddonOnNative = track.source === "addon" && this.audioEngine.usesRustAudio();
 
       try {
         const audioData = useNativeAudio
@@ -1374,7 +1388,16 @@ export class PlayerController {
           throw new Error("The data source does not support native audio playback.");
         }
 
-        if (isDownloaded && audioData) {
+        if (addonNativeOnly && audioData) {
+          await this.audioEngine.loadNativeFallback(
+            track.id,
+            audioData.bytes,
+            audioData.mimeType,
+            audioData.sourceUrl,
+            undefined,
+            track.durationSec,
+          );
+        } else if (isDownloaded && audioData) {
           await this.audioEngine.loadNativeFallback(
             track.id,
             audioData.bytes,
@@ -1394,7 +1417,31 @@ export class PlayerController {
           );
         }
       } catch (error) {
-        if (canFallBackToIframe) {
+        if (canRetryAddonOnNative) {
+          /*
+           * A downloaded copy is served first, so the retry does not re-resolve a stream that
+           * is meant to be reachable offline; `getNativeStreamData` alone knows nothing about
+           * the offline store.
+           */
+          const offlineData = isDownloaded
+            ? await this.dataSource.getStreamData?.(track)
+            : undefined;
+          const nativeAudioData = offlineData
+            ?? await this.dataSource.getNativeStreamData?.(track);
+          if (!nativeAudioData) throw error;
+          logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
+            trackId: track.id,
+            error: getErrorMessage(error),
+          });
+          await this.audioEngine.loadNativeFallback(
+            track.id,
+            nativeAudioData.bytes,
+            nativeAudioData.mimeType,
+            nativeAudioData.sourceUrl,
+            nativeAudioData.rustSource,
+            track.durationSec,
+          );
+        } else if (canFallBackToIframe) {
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to the YouTube player", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1452,7 +1499,12 @@ export class PlayerController {
         trackId: track.id,
       });
       const detail = getErrorMessage(error);
-      if (track.source === "local" || this.audioEngine.usesNativeAudio()) {
+      // Addon audio never goes through the YouTube player, whatever engine is selected.
+      if (
+        track.source === "local"
+        || track.source === "addon"
+        || this.audioEngine.usesNativeAudio()
+      ) {
         throw new Error(`Unable to load audio data for playback. ${detail}`);
       }
       throw new Error(`Unable to load YouTube player for playback. ${detail}`);
@@ -1604,6 +1656,11 @@ export class PlayerController {
 
   /** Whether a track can be handed to a standby deck rather than loaded on the spot. */
   private usesPreloadDeck(track: Track): boolean {
+    /*
+     * The IFrame deck resolves whatever id it is handed, and an addon's composite id is not a
+     * YouTube video id. Only Rust can take an addon stream it was given directly.
+     */
+    if (track.source === "addon") return this.audioEngine.usesRustAudio();
     return hasPreloadDeck(getAudioEngineMode(), {
       isLocal: track.source === "local",
       isDownloaded: isTrackDownloaded(track.id),

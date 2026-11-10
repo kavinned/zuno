@@ -3,6 +3,7 @@ import { Tooltip } from "@/components/motion/tooltip";
 import { SpinnerSteps } from "@/components/motion/loader";
 import { CheckActiveIcon, DownloadIcon } from "@/ui/icons";
 import { usePlayerSelector } from "../../../player/playerStore";
+import { useAddonDownloadsAllowed } from "../../settings/addonSources";
 import {
   cancelDownload,
   queueDownload,
@@ -25,6 +26,8 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
  */
 export function DownloadButton() {
   const track = usePlayerSelector((state) => state.currentTrack);
+  // Before the early return below: hooks cannot be called conditionally.
+  const addonDownloadsAllowed = useAddonDownloadsAllowed(track);
   const offline = useOfflineState();
   const trackProgress = useTrackDownloadProgress(track?.id);
 
@@ -32,6 +35,8 @@ export function DownloadButton() {
   if (!track || track.source === "local") return null;
 
   const isReady = Boolean(offline.entries[track.id]);
+  /* A downloaded addon copy stays removable even when the source has since forbidden downloads. */
+  if (track.source === "addon" && !addonDownloadsAllowed && !isReady) return null;
   const isDownloading = offline.downloadingId === track.id;
   const queuePosition = offline.queued.indexOf(track.id);
   const isQueued = queuePosition >= 0;

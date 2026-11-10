@@ -5991,7 +5991,31 @@ export class YouTubeMusicDataSource extends DataSource {
   async resolveDownloadUrl(
     track: Track,
     quality: AudioQuality = getDownloadQuality(),
-  ): Promise<{ url: string; mimeType: string; cookie?: string }> {
+  ): Promise<{
+    url: string;
+    mimeType: string;
+    cookie?: string;
+    contentLength?: number;
+    style?: "youtube" | "addon";
+  }> {
+    /*
+     * An addon id is not a YouTube video id, so it never enters the YouTube client walk. The
+     * source's own manifest decides whether a download is allowed at all — checked before
+     * resolving so a forbidden track fails without asking the addon for a stream.
+     */
+    if (track.source === "addon") {
+      const addons = this.addons;
+      if (!addons || !addons.allowDownloads(track)) {
+        throw new Error("Downloads are not allowed for this addon track.");
+      }
+      const stream = await addons.resolveTrack(track, quality);
+      return {
+        url: stream.url,
+        mimeType: stream.mimeType,
+        contentLength: stream.contentLength,
+        style: "addon",
+      };
+    }
     return this.resolveStream(track, quality, ["download", "music", "web"]);
   }
 

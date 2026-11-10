@@ -68,6 +68,15 @@ equal(calls.length, 1, "resolveTrack called once");
 equal(calls[0].quality, "high", "streaming quality passed through");
 equal(calls[0].engine, undefined, "rust path lets the service choose its engine");
 
+const dl = await source.resolveDownloadUrl(track, "high");
+equal(dl.style, "addon", "download marked addon");
+equal(dl.contentLength, 1234, "download length propagated");
+
+const deniedSource = new YouTubeMusicDataSource({ ...fakeAddons, allowDownloads: () => false });
+let denied = false;
+try { await deniedSource.resolveDownloadUrl(track, "high"); } catch { denied = true; }
+check(denied, "allowDownloads false refuses before resolving");
+
 let threw = false;
 try {
   await new YouTubeMusicDataSource().getTrack(track.id);

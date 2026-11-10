@@ -20,6 +20,7 @@ import {
 } from "../../player/offlineStore";
 import type { Track, TrackRating } from "../../datasource/types";
 import { libraryController, useLibraryState } from "../../player/playerStore";
+import { useAddonDownloadsAllowed } from "../settings/addonSources";
 import { useTrackContextMenu } from "./TrackContextMenu";
 import { ArtistLinks } from "./ArtistLinks";
 import { TrackArtwork } from "./TrackArtwork";
@@ -83,6 +84,8 @@ interface TrackRowProps extends PassthroughButtonProps {
  * state you need to see without hovering, the same reasoning as the queue's stop marker.
  */
 function DownloadAction({ track }: { track: Track }) {
+  // Before any early return: hooks cannot be called conditionally.
+  const addonDownloadsAllowed = useAddonDownloadsAllowed(track);
   // Subscribing to track-targeted status and progress hooks ensures:
   // 1. Idle tracks do not re-render on progress ticks (progress snapshot is null).
   // 2. Only the track currently downloading re-renders as percentage updates.
@@ -92,6 +95,8 @@ function DownloadAction({ track }: { track: Track }) {
   const isDownloading = status === "downloading";
 
   if (track.source === "local") return null;
+  /* A downloaded addon copy stays removable even when the source no longer allows downloads. */
+  if (track.source === "addon" && !addonDownloadsAllowed && status !== "ready") return null;
 
   const label = status === "ready"
     ? `Remove ${track.title} from downloads`
@@ -213,8 +218,8 @@ function RatingActions({ track }: { track: Track }) {
   const { rateTrack } = useTrackContextMenu();
   const libraryState = useLibraryState();
 
-  // Local files have no YouTube rating to set, and a signed-out session has nowhere to put one.
-  if (track.source === "local") return null;
+  // Only YouTube tracks have a rating to set, and a signed-out session has nowhere to put one.
+  if (track.source !== "youtube") return null;
 
   const rating = libraryController.getTrackRating(track.id);
   const isPending = libraryState.pendingLikeTrackIds.has(track.id);
@@ -308,6 +313,24 @@ function ExplicitBadge() {
       className="grid size-[15px] shrink-0 place-items-center rounded-[3px] bg-muted-foreground/85 text-[10px] font-bold leading-none text-background"
     >
       <span aria-hidden="true">E</span>
+    </span>
+  );
+}
+
+/**
+ * Marks a track as coming from an addon source.
+ *
+ * Sits beside the title, a sibling of the truncating span, so a long title shortens instead of
+ * pushing the stamp out of the row. The format is shown when the addon reported one, since
+ * "FLAC" is the fact that explains why the row is here at all.
+ */
+function AddonBadge({ format }: { format?: string }) {
+  return (
+    <span
+      title={format ? `Addon · ${format}` : "From an addon source"}
+      className="shrink-0 rounded-[3px] border border-border px-1 text-[10px] font-medium uppercase leading-[15px] text-muted-foreground"
+    >
+      {format || "Addon"}
     </span>
   );
 }
@@ -541,12 +564,15 @@ export const TrackRow = memo(function TrackRow({
             {track.title}
           </span>
           {track.isExplicit && <ExplicitBadge />}
+          {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
         </span>
+        {/* Addon artists have no artist id to navigate to, so their names stay plain text. */}
         <ArtistLinks
           className="truncate text-xs text-muted-foreground"
           artists={track.artists}
           fallback={track.artist}
           suppressArtistId={suppressArtistId}
+          interactive={track.source !== "addon"}
         />
       </span>
 
@@ -558,7 +584,7 @@ export const TrackRow = memo(function TrackRow({
       {showAlbum && (
         <span className="hidden min-w-0 flex-1 basis-0 truncate text-xs text-muted-foreground lg:block">
           {track.album
-            ? (openAlbumForTrack && track.source !== "local" ? (
+            ? (openAlbumForTrack && track.source === "youtube" ? (
               /*
                 A span with role="link", not an anchor or a button: the row itself is a
                 <button>, and nesting interactive elements is invalid markup that the parser
