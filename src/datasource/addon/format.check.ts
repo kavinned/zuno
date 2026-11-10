@@ -21,6 +21,9 @@ check(!acceptAddonStream({ url: "ftp://cdn/a", format: "flac" }, "rust").ok, "no
 check(!acceptAddonStream({ url: "https://user:pass@cdn/a", format: "flac" }, "rust").ok, "credentials refused");
 check(acceptAddonStream({ url: "http://localhost/a", format: "flac" }, "rust").ok, "http accepted");
 check(!acceptAddonStream({ url: "https://cdn/a", format: "ape" }, "rust").ok, "unsupported codec refused");
+check(!acceptAddonStream({ url: 42 as unknown as string, format: "flac" }, "rust").ok, "malformed url refused without throwing");
+check(!acceptAddonStream({ url: "https://cdn/a", format: 3 as unknown as string }, "rust").ok, "malformed format refused without throwing");
+check(!acceptAddonStream({ url: "https://cdn/a", format: "flac", audioModes: "ATMOS" as unknown as string[] }, "rust").ok, "string audioModes still refuses atmos");
 
 check(normalizeSampleRate(44.1) === 44100, "kHz promoted");
 check(normalizeSampleRate(48000) === 48000, "Hz preserved");

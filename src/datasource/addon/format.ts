@@ -62,16 +62,25 @@ const MIME_BY_FORMAT: Record<string, { mimeType: string; kind: StreamKind }> = {
 const FALSE_LIKE: ReadonlySet<string> = new Set(["false", "none", "0", "no", "off"]);
 const ATMOS_MARKERS: ReadonlySet<string> = new Set(["atmos", "joc"]);
 
-function normalized(value: string | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
+function normalized(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-function firstToken(...values: Array<string | undefined>): string {
+function mimeToken(value: unknown): string {
+  return normalized(value).split(";")[0].trim();
+}
+
+function firstToken(...values: unknown[]): string {
   for (const value of values) {
     const token = normalized(value);
     if (token !== "") return token;
   }
   return "";
+}
+
+function audioModeList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return typeof value === "string" ? [value] : [];
 }
 
 function isUnencrypted(value: unknown): boolean {
@@ -80,13 +89,12 @@ function isUnencrypted(value: unknown): boolean {
 }
 
 function hasAtmosMarker(answer: AddonStreamAnswer): boolean {
-  const modes = [answer.audioMode, ...(answer.audioModes ?? [])];
+  const modes = [answer.audioMode, ...audioModeList(answer.audioModes)];
   return modes.some((mode) => ATMOS_MARKERS.has(normalized(mode)));
 }
 
 function isRefusedTransport(answer: AddonStreamAnswer): boolean {
-  const mime = normalized(answer.mimeType?.split(";")[0]);
-  if (REFUSED_MIMES.has(mime)) return true;
+  if (REFUSED_MIMES.has(mimeToken(answer.mimeType))) return true;
   return [answer.manifest, answer.mediaType, answer.format].some((value) =>
     REFUSED_TRANSPORTS.has(normalized(value)),
   );
@@ -99,7 +107,7 @@ function hasRefusedFormat(answer: AddonStreamAnswer): boolean {
 }
 
 function resolveKind(answer: AddonStreamAnswer): { mimeType: string; kind: StreamKind } | null {
-  const explicitMime = normalized(answer.mimeType?.split(";")[0]);
+  const explicitMime = mimeToken(answer.mimeType);
   if (explicitMime !== "") {
     const baseKind = KIND_BY_MIME[explicitMime];
     if (baseKind === undefined) return null;
@@ -152,7 +160,7 @@ export function normalizeExpiresAtMs(value?: string | number): number | undefine
 }
 
 export function acceptAddonStream(answer: AddonStreamAnswer, engine: AddonEngine): AddonStreamResult {
-  const url = answer.url?.trim();
+  const url = typeof answer.url === "string" ? answer.url.trim() : "";
   if (!url) return { ok: false, reason: "url" };
 
   let parsed: URL;
