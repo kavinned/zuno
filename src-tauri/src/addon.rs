@@ -68,6 +68,13 @@ pub(crate) fn redacted_url(raw: &str) -> String {
     }
 }
 
+/// Same three-hop ceiling as `Policy::limited(3)`, but every hop must also pass the same
+/// scheme/credential/private-host rules as the initial URL — a permitted HTTPS addon must not
+/// be able to downgrade to public plaintext or bounce into localhost/private `http`.
+fn should_follow_redirect(previous_len: usize, target: &str) -> bool {
+    previous_len <= 3 && validate_addon_url(target).is_ok()
+}
+
 fn declared_body_too_large(content_length: Option<u64>) -> bool {
     content_length.is_some_and(|length| length > ADDON_MAX_BODY_BYTES as u64)
 }
@@ -98,7 +105,13 @@ pub(crate) async fn addon_http_request(
     let timeout_ms = input.timeout_ms.unwrap_or(ADDON_DEFAULT_TIMEOUT_MS);
 
     let client = crate::http_client_builder()
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if should_follow_redirect(attempt.previous().len(), attempt.url().as_str()) {
+                attempt.follow()
+            } else {
+                attempt.error("addon redirect blocked")
+            }
+        }))
         .timeout(Duration::from_millis(timeout_ms))
         .build()
         .map_err(|error| format!("addon HTTP client creation failed: {error}"))?;
@@ -198,5 +211,14 @@ mod tests {
     fn parses_content_range_total() {
         assert_eq!(parse_content_range_total("bytes 0-0/12345"), Some(12345));
         assert_eq!(parse_content_range_total("bytes 0-0/*"), None);
+    }
+
+    #[test]
+    fn restricts_redirect_targets_and_count() {
+        assert!(should_follow_redirect(1, "https://public.example/x"));
+        assert!(!should_follow_redirect(1, "http://public.example/x"));
+        assert!(should_follow_redirect(1, "http://localhost:8787/dev"));
+        assert!(should_follow_redirect(1, "http://127.0.0.1/x"));
+        assert!(!should_follow_redirect(4, "https://public.example/x"));
     }
 }
