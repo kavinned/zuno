@@ -54,7 +54,7 @@ export interface AddonServiceDeps {
   registry: AddonRegistry;
   rows: AddonServiceRows;
   request: AddonRequest;
-  probeLength: (url: string) => Promise<AddonLengthProbe>;
+  probeLength: (url: string, sniffFlac?: boolean) => Promise<AddonLengthProbe>;
   outputCapable: () => boolean;
   engine: () => AddonServiceEngine;
   isDownloaded: (trackId: string) => boolean;
@@ -89,6 +89,24 @@ function firstNonBlank(...values: Array<string | undefined>): string | undefined
 function answerContentLength(answer: AddonStreamAnswer): number | undefined {
   const value = (answer as { contentLength?: unknown }).contentLength;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** TorBox answers carry only `{ url, format: "flac" }`, so FLAC has to be recognised by name. */
+function answerIsFlac(answer: AddonStreamAnswer): boolean {
+  return [answer.format, answer.codec, answer.mimeType].some(
+    (value) => typeof value === "string" && value.toLowerCase().includes("flac"),
+  );
+}
+
+/** A stream's own size is a usable bitrate estimate when the addon does not state one. */
+function deriveKbps(
+  contentLength: number | undefined,
+  durationSec: number | undefined,
+): number | undefined {
+  if (contentLength === undefined || durationSec === undefined) return undefined;
+  if (!Number.isFinite(contentLength) || contentLength <= 0) return undefined;
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return undefined;
+  return Math.round((contentLength * 8) / 1000 / durationSec);
 }
 
 function sameOrigin(candidate: string, baseUrl: string): boolean {
@@ -146,6 +164,8 @@ function streamFailureMessage(reason: string): string {
 export class AddonService {
   private readonly deps: AddonServiceDeps;
   private readonly clients = new Map<string, AddonClientLike>();
+  /** Probe answers keyed by stream URL; a re-resolve of the same stream costs nothing extra. */
+  private readonly probes = new Map<string, AddonLengthProbe>();
 
   constructor(deps: AddonServiceDeps) {
     this.deps = deps;
@@ -294,12 +314,18 @@ export class AddonService {
     const stream = accepted.stream;
 
     let contentLength = answerContentLength(answer);
+    /*
+     * A FLAC answer never states sample rate or bit depth, so one ranged sniff supplies them;
+     * on the Rust engine the same request doubles as the missing content-length probe. Every
+     * other format keeps the existing length-only probe, and only when Rust needs it.
+     */
+    const probe = answerIsFlac(answer)
+      ? await this.probeStream(stream.url, true)
+      : engine === "rust" && contentLength === undefined
+        ? await this.probeStream(stream.url, false)
+        : undefined;
     if (engine === "rust" && contentLength === undefined) {
-      try {
-        contentLength = (await this.deps.probeLength(stream.url)).contentLength;
-      } catch {
-        contentLength = undefined;
-      }
+      contentLength = probe?.contentLength;
     }
 
     const resolved: ResolvedAddonStream = {
@@ -310,9 +336,12 @@ export class AddonService {
     if (contentLength !== undefined) resolved.contentLength = contentLength;
     const codec = firstNonBlank(answer.codec, answer.fileCodec);
     if (codec !== undefined) resolved.codec = codec;
-    if (stream.sampleRateHz !== undefined) resolved.sampleRateHz = stream.sampleRateHz;
-    if (stream.bitDepth !== undefined) resolved.bitDepth = stream.bitDepth;
-    if (stream.kbps !== undefined) resolved.kbps = stream.kbps;
+    const sampleRateHz = stream.sampleRateHz ?? probe?.sampleRateHz;
+    if (sampleRateHz !== undefined) resolved.sampleRateHz = sampleRateHz;
+    const bitDepth = stream.bitDepth ?? probe?.bitDepth;
+    if (bitDepth !== undefined) resolved.bitDepth = bitDepth;
+    const kbps = stream.kbps ?? deriveKbps(contentLength, track.durationSec);
+    if (kbps !== undefined) resolved.kbps = kbps;
     if (stream.expiresAtMs !== undefined) resolved.expiresAt = Math.floor(stream.expiresAtMs / 1000);
     return resolved;
   }
@@ -326,11 +355,28 @@ export class AddonService {
   }
 
   invalidateSource(id: string): void {
+    this.probes.clear();
     const prefix = `${id}|`;
     for (const [key, client] of this.clients) {
       if (!key.startsWith(prefix)) continue;
       client.invalidate();
       this.clients.delete(key);
+    }
+  }
+
+  /** Best-effort and cached: a failed probe must never fail the stream. */
+  private async probeStream(
+    url: string,
+    sniffFlac: boolean,
+  ): Promise<AddonLengthProbe | undefined> {
+    const cached = this.probes.get(url);
+    if (cached !== undefined) return cached;
+    try {
+      const probe = await this.deps.probeLength(url, sniffFlac);
+      this.probes.set(url, probe);
+      return probe;
+    } catch {
+      return undefined;
     }
   }
 

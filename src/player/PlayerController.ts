@@ -1259,7 +1259,8 @@ export class PlayerController {
           this.loadedTrackId = track.id;
           this.pendingSeekTime = null;
           // The deck already holds these bytes, so the slot is stale rather than useful.
-          this.claimWarmedStream(track.id);
+          const warmed = this.claimWarmedStream(track.id);
+          this.applyAddonAudioInfo(track.id, warmed?.audioInfo);
           logInternalInfo("PlayerController.ensureTrackLoaded preloaded deck", {
             trackId: track.id,
             crossfadeSec: this.crossfadeSec,
@@ -1380,6 +1381,7 @@ export class PlayerController {
        */
       const canRetryAddonOnNative = track.source === "addon" && this.audioEngine.usesRustAudio();
 
+      let audioInfo: StreamData["audioInfo"] = undefined;
       try {
         const audioData = useNativeAudio
           ? warmed ?? await this.dataSource.getStreamData?.(track)
@@ -1387,6 +1389,7 @@ export class PlayerController {
         if (useNativeAudio && !audioData) {
           throw new Error("The data source does not support native audio playback.");
         }
+        audioInfo = audioData?.audioInfo;
 
         if (addonNativeOnly && audioData) {
           await this.audioEngine.loadNativeFallback(
@@ -1429,6 +1432,7 @@ export class PlayerController {
           const nativeAudioData = offlineData
             ?? await this.dataSource.getNativeStreamData?.(track);
           if (!nativeAudioData) throw error;
+          audioInfo = nativeAudioData.audioInfo;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1450,6 +1454,7 @@ export class PlayerController {
         } else if (canFallBackToNative && isEmbedRestrictedPlaybackError(error)) {
           const nativeAudioData = await this.dataSource.getStreamData?.(track);
           if (!nativeAudioData) throw error;
+          audioInfo = nativeAudioData.audioInfo;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1468,6 +1473,7 @@ export class PlayerController {
       }
 
       this.loadedTrackId = track.id;
+      this.applyAddonAudioInfo(track.id, audioInfo);
       if (this.pendingSeekTime !== null) {
         this.audioEngine.seekTo(this.pendingSeekTime);
         this.pendingSeekTime = null;
@@ -1509,6 +1515,18 @@ export class PlayerController {
       }
       throw new Error(`Unable to load YouTube player for playback. ${detail}`);
     }
+  }
+
+  /** Carries real stream metadata onto the displayed track once its audio has loaded. */
+  private applyAddonAudioInfo(trackId: string, audioInfo: StreamData["audioInfo"]): void {
+    if (audioInfo === undefined) return;
+    const current = this.state.currentTrack;
+    if (current?.id !== trackId || current.addon === undefined) return;
+    const known = Object.fromEntries(
+      Object.entries(audioInfo).filter(([, value]) => value !== undefined),
+    );
+    if (Object.keys(known).length === 0) return;
+    this.setState({ currentTrack: { ...current, addon: { ...current.addon, ...known } } });
   }
 
   private async playLoadedTrack(): Promise<boolean> {

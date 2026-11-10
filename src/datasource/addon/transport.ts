@@ -16,13 +16,18 @@ export interface AddonLengthProbe {
   contentLength?: number;
   contentType?: string;
   acceptsRanges: boolean;
+  sampleRateHz?: number;
+  bitDepth?: number;
 }
 
 export const tauriAddonRequest: AddonRequest = (input) =>
   invoke("addon_http_request", { input });
 
-export const probeAddonLength = (url: string): Promise<AddonLengthProbe> =>
-  invoke("addon_probe_length", { url });
+export const probeAddonLength = (
+  url: string,
+  sniffFlac = false,
+): Promise<AddonLengthProbe> =>
+  invoke("addon_probe_length", { url, sniffFlac });
 
 export const getAddonSecret = (sourceId: string): Promise<string | null> =>
   invoke("addon_secret_get", { sourceId });

@@ -49,6 +49,8 @@ export type StreamData = {
    * resolving one of the other two would do the work this avoids.
    */
   rustSource?: RustAudioSource;
+  /** Real stream metadata, when the source could learn it (addon FLAC streams). */
+  audioInfo?: { sampleRateHz?: number; bitDepth?: number; kbps?: number };
 };
 
 export abstract class DataSource {

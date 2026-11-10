@@ -130,6 +130,19 @@ type NativeAudioSourcePayload = {
   byteLength: number;
 };
 
+/** Only the fields that are actually known, so a missing one is not rendered as zero. */
+function addonAudioInfo(stream: {
+  sampleRateHz?: number;
+  bitDepth?: number;
+  kbps?: number;
+}): StreamData["audioInfo"] {
+  const info: NonNullable<StreamData["audioInfo"]> = {};
+  if (stream.sampleRateHz !== undefined) info.sampleRateHz = stream.sampleRateHz;
+  if (stream.bitDepth !== undefined) info.bitDepth = stream.bitDepth;
+  if (stream.kbps !== undefined) info.kbps = stream.kbps;
+  return Object.keys(info).length > 0 ? info : undefined;
+}
+
 type MusicColumn = {
   title?: {
     toString(): string;
@@ -6615,6 +6628,7 @@ export class YouTubeMusicDataSource extends DataSource {
           contentLength: stream.contentLength,
           style: "addon",
         },
+        audioInfo: addonAudioInfo(stream),
       };
     }
 
@@ -6656,7 +6670,11 @@ export class YouTubeMusicDataSource extends DataSource {
     if (payload.byteLength === 0) {
       throw new Error("Audio download returned no data.");
     }
-    return { mimeType: payload.mimeType, sourceUrl: payload.url };
+    return {
+      mimeType: payload.mimeType,
+      sourceUrl: payload.url,
+      audioInfo: addonAudioInfo(stream),
+    };
   }
 
   /**

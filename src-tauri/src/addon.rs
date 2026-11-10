@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 
 const ADDON_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const ADDON_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+/// Enough of a FLAC file to hold the mandatory STREAMINFO metadata block.
+const ADDON_FLAC_SNIFF_BYTES: usize = 64 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +32,17 @@ pub(crate) struct AddonLengthProbe {
     #[serde(skip_serializing_if = "Option::is_none")]
     content_type: Option<String>,
     accepts_ranges: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_rate_hz: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bit_depth: Option<u8>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AddonAudioInfo {
+    sample_rate_hz: u32,
+    bit_depth: u8,
 }
 
 /// Whether a plain-`http` host is a local or private-network literal.
@@ -112,6 +125,34 @@ fn parse_content_range_total(value: &str) -> Option<u64> {
     value.rsplit_once('/')?.1.trim().parse().ok()
 }
 
+/// Reads sample rate and bit depth out of the mandatory FLAC STREAMINFO block.
+///
+/// TorBox stream answers carry only `{ url, format: "flac" }`, so these two fields have to come
+/// from the file itself. The block is 34 bytes, fixed-layout, and always first.
+fn parse_flac_info(bytes: &[u8]) -> Option<AddonAudioInfo> {
+    if bytes.len() < 26 || &bytes[0..4] != b"fLaC" {
+        return None;
+    }
+    // Last-block flag is the high bit; the low seven bits are the metadata block type.
+    if bytes[4] & 0x7f != 0 {
+        return None;
+    }
+    let block_len = ((bytes[5] as usize) << 16) | ((bytes[6] as usize) << 8) | bytes[7] as usize;
+    if block_len < 34 {
+        return None;
+    }
+    let packed = u64::from_be_bytes(bytes[18..26].try_into().ok()?);
+    let sample_rate_hz = (packed >> 44) as u32;
+    let bit_depth = ((packed >> 36) & 0x1f) as u8 + 1;
+    if sample_rate_hz == 0 || bit_depth == 0 {
+        return None;
+    }
+    Some(AddonAudioInfo {
+        sample_rate_hz,
+        bit_depth,
+    })
+}
+
 fn header_value(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
     response
         .headers()
@@ -162,15 +203,90 @@ fn addon_secret_entry(source_id: &str) -> Result<keyring::Entry, String> {
         .map_err(|error| format!("credential store unavailable: {error}"))
 }
 
+/// The FLAC variant of the length probe: one ranged GET that yields the length as a side
+/// effect and the first 64 KiB to read STREAMINFO from. HEAD is skipped so FLAC costs exactly
+/// one request, and a 200 body is abandoned at the cap rather than downloaded whole.
+async fn sniff_flac_probe(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(u16, AddonLengthProbe), String> {
+    let mut response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "Zuno/1.4.0")
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .header(reqwest::header::RANGE, "bytes=0-65535")
+        .send()
+        .await
+        .map_err(|error| format!("addon length probe failed: {}", error.without_url()))?;
+
+    let status = response.status().as_u16();
+    let content_type = header_value(&response, reqwest::header::CONTENT_TYPE);
+    let supports_ranges = status == 206
+        || accepts_ranges(header_value(&response, reqwest::header::ACCEPT_RANGES).as_deref());
+    let content_length = match status {
+        206 => header_value(&response, reqwest::header::CONTENT_RANGE)
+            .as_deref()
+            .and_then(parse_content_range_total),
+        200 => parse_content_length(
+            header_value(&response, reqwest::header::CONTENT_LENGTH).as_deref(),
+        ),
+        _ => None,
+    };
+
+    let mut body = Vec::new();
+    while body.len() < ADDON_FLAC_SNIFF_BYTES {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("addon length probe failed: {}", error.without_url()))?
+        else {
+            break;
+        };
+        let take = (ADDON_FLAC_SNIFF_BYTES - body.len()).min(chunk.len());
+        body.extend_from_slice(&chunk[..take]);
+    }
+    drop(response);
+
+    let info = parse_flac_info(&body);
+    Ok((
+        status,
+        AddonLengthProbe {
+            content_length,
+            content_type,
+            accepts_ranges: supports_ranges,
+            sample_rate_hz: info.as_ref().map(|info| info.sample_rate_hz),
+            bit_depth: info.as_ref().map(|info| info.bit_depth),
+        },
+    ))
+}
+
 /// Reads a stream's size without downloading it.
 ///
 /// The length is best-effort: a server that refuses `HEAD`, ignores `Range`, or simply does not
-/// say is still a usable stream, so only transport failures are `Err`.
+/// say is still a usable stream, so only transport failures are `Err`. With `sniff_flac` the
+/// first 64 KiB are read as well, so a FLAC's sample rate and bit depth come back from the same
+/// request instead of a second one.
 #[tauri::command]
-pub(crate) async fn addon_probe_length(url: String) -> Result<AddonLengthProbe, String> {
+pub(crate) async fn addon_probe_length(
+    url: String,
+    sniff_flac: Option<bool>,
+) -> Result<AddonLengthProbe, String> {
     validate_addon_url(&url)?;
     let started_at = Instant::now();
     let client = addon_client(ADDON_DEFAULT_TIMEOUT_MS)?;
+
+    if sniff_flac.unwrap_or(false) {
+        let (status, probe) = sniff_flac_probe(&client, &url).await?;
+        eprintln!(
+            "[internal][addon][info] addon_probe_length url={} status={} content_length={:?} elapsed_ms={}",
+            redacted_url(&url),
+            status,
+            probe.content_length,
+            started_at.elapsed().as_millis()
+        );
+        return Ok(probe);
+    }
 
     let head = client
         .head(&url)
@@ -225,6 +341,8 @@ pub(crate) async fn addon_probe_length(url: String) -> Result<AddonLengthProbe, 
         content_length,
         content_type,
         accepts_ranges: supports_ranges,
+        sample_rate_hz: None,
+        bit_depth: None,
     })
 }
 
@@ -388,6 +506,25 @@ mod tests {
         assert_eq!(parse_content_length(Some("nope")), None);
         assert!(accepts_ranges(Some("bytes")));
         assert!(!accepts_ranges(None));
+    }
+
+    #[test]
+    fn parses_flac_streaminfo() {
+        let mut bytes = vec![0u8; 8 + 34];
+        bytes[0..4].copy_from_slice(b"fLaC");
+        bytes[4] = 0x80; // last metadata block, type STREAMINFO
+        bytes[5..8].copy_from_slice(&[0, 0, 34]);
+        let packed = (44_100u64 << 44) | ((2u64 - 1) << 41) | ((16u64 - 1) << 36);
+        bytes[18..26].copy_from_slice(&packed.to_be_bytes());
+        let info = parse_flac_info(&bytes).expect("flac info");
+        assert_eq!(info.sample_rate_hz, 44_100);
+        assert_eq!(info.bit_depth, 16);
+    }
+
+    #[test]
+    fn rejects_non_flac_headers() {
+        assert!(parse_flac_info(b"not a flac file").is_none());
+        assert!(parse_flac_info(&[]).is_none());
     }
 
     #[test]

@@ -214,7 +214,15 @@ interface SetupOptions {
   engine?: "rust" | "native" | "iframe";
   downloaded?: Set<string>;
   downloadedTracks?: Map<string, Track>;
-  probeLength?: (url: string) => Promise<{ contentLength?: number; acceptsRanges: boolean }>;
+  probeLength?: (
+    url: string,
+    sniffFlac?: boolean,
+  ) => Promise<{
+    contentLength?: number;
+    acceptsRanges: boolean;
+    sampleRateHz?: number;
+    bitDepth?: number;
+  }>;
   clientFactory?: (source: AddonSourceConfig) => AddonClientLike;
 }
 
@@ -674,19 +682,19 @@ for (const [error, expected] of [
 {
   const sourceId = SOURCE_A;
   const baseUrl = "https://rust.example/secret";
-  const probed: string[] = [];
+  const probed: Array<{ url: string; sniff: boolean }> = [];
   const { service } = await setup({
     sources: [{ id: sourceId, baseUrl }],
     engine: "rust",
-    probeLength: async (url) => {
-      probed.push(url);
+    probeLength: async (url, sniffFlac = false) => {
+      probed.push({ url, sniff: sniffFlac });
       return { contentLength: 4321, acceptsRanges: true };
     },
     script: () => ({
       manifest: manifest(),
       searchResult: [searchRow({ id: "tidal:1" }), searchRow({ id: "tidal:2" })],
       streamAnswer: (trackId) => trackId === "tidal:2"
-        ? { url: "https://cdn.example/b.flac", format: "flac", contentLength: 999 }
+        ? { url: "https://cdn.example/b.mp3", format: "mp3", contentLength: 999 }
         : { url: "https://cdn.example/a.flac", format: "flac", expiresAt: 1767225600 },
     }),
   });
@@ -694,7 +702,8 @@ for (const [error, expected] of [
   const tracks = await service.search("q", "high");
   const first = await service.resolveTrack(tracks[0], "high");
   equal(first.contentLength, 4321, "rust engine probes a missing content length");
-  equal(probed[0], "https://cdn.example/a.flac", "the probe targets the stream URL");
+  equal(probed[0].url, "https://cdn.example/a.flac", "the probe targets the stream URL");
+  equal(probed[0].sniff, true, "a flac answer is sniffed for audio info");
   equal(first.expiresAt, 1767225600, "expiry converted to seconds");
 
   const second = await service.resolveTrack(tracks[1], "high");
@@ -725,12 +734,12 @@ for (const [error, expected] of [
 
 {
   const sourceId = SOURCE_A;
-  const probed: string[] = [];
+  const probed: Array<{ url: string; sniff: boolean }> = [];
   const { service } = await setup({
     sources: [{ id: sourceId, baseUrl: "https://native.example/secret" }],
     engine: "native",
-    probeLength: async (url) => {
-      probed.push(url);
+    probeLength: async (url, sniffFlac = false) => {
+      probed.push({ url, sniff: sniffFlac });
       return { contentLength: 4321, acceptsRanges: true };
     },
     script: () => ({
@@ -742,8 +751,77 @@ for (const [error, expected] of [
 
   const [track] = await service.search("q", "high");
   const stream = await service.resolveTrack(track, "high");
-  equal(probed.length, 0, "native playback does not probe the length");
+  equal(probed.length, 1, "native flac playback still sniffs audio info");
+  equal(probed[0].sniff, true, "the native sniff asks for flac metadata");
   equal(stream.contentLength, undefined, "native playback has no content length");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const probeCalls: Array<{ url: string; sniff: boolean }> = [];
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://flac-info.example/secret" }],
+    engine: "rust",
+    probeLength: async (url, sniffFlac = false) => {
+      probeCalls.push({ url, sniff: sniffFlac });
+      return {
+        contentLength: 10_000_000,
+        acceptsRanges: true,
+        sampleRateHz: 44_100,
+        bitDepth: 24,
+      };
+    },
+    script: () => ({
+      manifest: manifest(),
+      searchResult: [searchRow()],
+      streamAnswer: () => ({ url: "https://cdn.example/a.flac", format: "flac" }),
+    }),
+  });
+
+  const [track] = await service.search("q", "high");
+  const timedTrack: Track = { ...track, durationSec: 200 };
+  const stream = await service.resolveTrack(timedTrack, "high");
+  equal(probeCalls.length, 1, "a flac answer is sniffed once");
+  equal(probeCalls[0].sniff, true, "the sniff is opt-in");
+  equal(stream.sampleRateHz, 44_100, "sample rate comes from the sniff");
+  equal(stream.bitDepth, 24, "bit depth comes from the sniff");
+  equal(stream.contentLength, 10_000_000, "rust takes its missing length from the same request");
+  equal(stream.kbps, 400, "bitrate is derived from length and duration");
+
+  await service.resolveTrack(timedTrack, "high");
+  equal(probeCalls.length, 1, "a repeated resolve reuses the cached probe");
+
+  service.invalidateSource(sourceId);
+  await service.resolveTrack(timedTrack, "high");
+  equal(probeCalls.length, 2, "invalidating the source clears the probe cache");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const probeCalls: boolean[] = [];
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://mp3-info.example/secret" }],
+    engine: "rust",
+    probeLength: async (_url, sniffFlac = false) => {
+      probeCalls.push(sniffFlac);
+      return { contentLength: 4321, acceptsRanges: true };
+    },
+    script: () => ({
+      manifest: manifest(),
+      searchResult: [searchRow()],
+      streamAnswer: () => ({
+        url: "https://cdn.example/a.mp3",
+        format: "mp3",
+        sampleRate: 44_100,
+      }),
+    }),
+  });
+
+  const [track] = await service.search("q", "high");
+  const stream = await service.resolveTrack(track, "high");
+  equal(probeCalls.length, 1, "a non-flac stream is probed for its length");
+  equal(probeCalls[0], false, "a non-flac stream is not sniffed");
+  equal(stream.sampleRateHz, 44_100, "answer metadata is kept when no sniff runs");
 }
 
 {
