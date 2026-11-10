@@ -455,7 +455,22 @@ export class PlayerController {
           .then((fetched) => {
             // A skip during the refresh makes this answer belong to a track nobody is on.
             if (requestId !== this.playTrackRequestId) return;
-            this.setState({ currentTrack: mergeWithQueued(fetched) });
+            let next = mergeWithQueued(fetched);
+            const current = this.state.currentTrack;
+            /*
+             * The load may already have earned what this refresh knows nothing about: a
+             * substituted stream and the audio info merged onto a real addon track. Keep both,
+             * but only for the same track — a stale answer must not leak across ids.
+             */
+            if (current?.id === videoId) {
+              if (next.addonSubstitution === undefined && current.addonSubstitution !== undefined) {
+                next = { ...next, addonSubstitution: current.addonSubstitution };
+              }
+              if (next.addon !== undefined && current.addon !== undefined) {
+                next = { ...next, addon: { ...next.addon, ...current.addon } };
+              }
+            }
+            this.setState({ currentTrack: next });
           })
           .catch((error) => {
             // Playback is already under way on the known copy; this is a missing refresh, not
@@ -1458,6 +1473,7 @@ export class PlayerController {
           const nativeAudioData = await this.dataSource.getStreamData?.(track);
           if (!nativeAudioData) throw error;
           audioInfo = nativeAudioData.audioInfo;
+          addonSubstitution = nativeAudioData.addonSubstitution;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
