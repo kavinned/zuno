@@ -426,11 +426,12 @@ export function SearchResultsPage({
                           iconSize={24}
                         />
                         <span className="flex min-w-0 flex-1 flex-col [&_span]:truncate [&_span]:text-xs [&_span]:text-muted-foreground [&_strong]:truncate [&_strong]:text-sm [&_strong]:font-medium">
-                          <strong>{track.title}</strong>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <strong>{track.title}</strong>
+                            {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
+                          </div>
                           <ArtistLinks artists={track.artists} fallback={track.artist} />
                         </span>
-                        {/* Row-level, so the text column's truncation cannot swallow it. */}
-                        {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
                         <PlayActiveIcon size={18} />
                       </button>
                     );
