@@ -2804,6 +2804,25 @@ impl MediaBuffer {
         }
     }
 
+    /// Extends a range with bytes as they arrive, so a reader can consume the prefix instead
+    /// of waiting for the whole range body.
+    fn append(&mut self, index: usize, bytes: &[u8]) {
+        if index >= self.chunks.len() {
+            return;
+        }
+        match &mut self.chunks[index] {
+            Some(existing) => existing.extend_from_slice(bytes),
+            slot @ None => *slot = Some(bytes.to_vec()),
+        }
+    }
+
+    /// Empties one range before a retry, which must not duplicate bytes already appended.
+    fn clear(&mut self, index: usize) {
+        if index < self.chunks.len() {
+            self.chunks[index] = None;
+        }
+    }
+
     /// Copies `start..=end` out of the chunk list, which may straddle several chunks.
     pub(crate) fn read(&self, start: usize, end: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(end.saturating_sub(start) + 1);
@@ -4280,6 +4299,10 @@ async fn fill_media_buffer(
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
                     }
+                    /* A retried range must start empty, or the bytes it already wrote double up. */
+                    if let Ok(mut guard) = abandoned.lock() {
+                        guard.clear(index);
+                    }
                     let request = match style {
                         MediaRequestStyle::Youtube => googlevideo_audio_request(
                             &client,
@@ -4312,31 +4335,117 @@ async fn fill_media_buffer(
                                     continue;
                                 }
                             }
-                            match response.bytes().await {
-                                Ok(body) => {
-                                    let expected = expected_range_len(start as u64, end as u64);
-                                    if body.len() as u64 == expected {
-                                        return Ok((index, body.to_vec()));
+                            if index == 0 {
+                                match response.bytes().await {
+                                    Ok(body) => {
+                                        let expected = expected_range_len(start as u64, end as u64);
+                                        if body.len() as u64 == expected {
+                                            return Ok((index, Some(body.to_vec())));
+                                        }
+                                        last = cache_error(format!(
+                                            "range length mismatch: {} of {expected} bytes",
+                                            body.len()
+                                        ));
                                     }
-                                    last = cache_error(format!(
-                                        "range length mismatch: {} of {expected} bytes",
-                                        body.len()
-                                    ));
+                                    Err(error) => {
+                                        last = cache_error(format!(
+                                            "audio range read failed: {}",
+                                            error.without_url()
+                                        ));
+                                    }
                                 }
-                                Err(error) => {
-                                    last = cache_error(format!(
-                                        "audio range read failed: {}",
-                                        error.without_url()
-                                    ));
+                            } else {
+                                /*
+                                 * Every range is appended as it arrives. Waiting for
+                                 * `bytes()` made the decoder drain the 128 KiB head and then
+                                 * stall until the whole rest of the file landed.
+                                 */
+                                let expected = expected_range_len(start as u64, end as u64);
+                                let mut received = 0u64;
+                                let mut body = response.bytes_stream();
+                                let mut read_error: Option<CommandError> = None;
+                                while let Some(chunk) = body.next().await {
+                                    if abandoned.lock().map(|guard| guard.failed).unwrap_or(true)
+                                        || load_superseded(slot)
+                                    {
+                                        return Err((index, cache_error("fill abandoned")));
+                                    }
+                                    match chunk {
+                                        Ok(bytes) => {
+                                            received += bytes.len() as u64;
+                                            match abandoned.lock() {
+                                                Ok(mut guard) => guard.append(index, &bytes),
+                                                Err(_) => {
+                                                    return Err((
+                                                        index,
+                                                        cache_error("audio buffer lock poisoned"),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            read_error = Some(cache_error(format!(
+                                                "audio range read failed: {}",
+                                                error.without_url()
+                                            )));
+                                            break;
+                                        }
+                                    }
                                 }
+                                if let Some(error) = read_error {
+                                    last = error;
+                                    continue;
+                                }
+                                if received == expected {
+                                    return Ok((index, None));
+                                }
+                                last = cache_error(format!(
+                                    "range length mismatch: {received} of {expected} bytes"
+                                ));
                             }
                         }
                         Ok(response) if response.status().is_success() => {
-                            match response.bytes().await {
-                                Ok(body) => return Ok((index, body.to_vec())),
-                                Err(error) => {
-                                    last = cache_error(format!("audio range read failed: {error}"));
+                            if index == 0 {
+                                match response.bytes().await {
+                                    Ok(body) => return Ok((index, Some(body.to_vec()))),
+                                    Err(error) => {
+                                        last = cache_error(format!(
+                                            "audio range read failed: {error}"
+                                        ));
+                                    }
                                 }
+                            } else {
+                                let mut body = response.bytes_stream();
+                                let mut read_error: Option<CommandError> = None;
+                                while let Some(chunk) = body.next().await {
+                                    if abandoned.lock().map(|guard| guard.failed).unwrap_or(true)
+                                        || load_superseded(slot)
+                                    {
+                                        return Err((index, cache_error("fill abandoned")));
+                                    }
+                                    match chunk {
+                                        Ok(bytes) => match abandoned.lock() {
+                                            Ok(mut guard) => guard.append(index, &bytes),
+                                            Err(_) => {
+                                                return Err((
+                                                    index,
+                                                    cache_error("audio buffer lock poisoned"),
+                                                ));
+                                            }
+                                        },
+                                        Err(error) => {
+                                            read_error = Some(cache_error(format!(
+                                                "audio range read failed: {error}"
+                                            )));
+                                            break;
+                                        }
+                                    }
+                                }
+                                if let Some(error) = read_error {
+                                    last = error;
+                                    continue;
+                                }
+                                return Ok((index, None));
                             }
                         }
                         Ok(response) => {
@@ -4362,7 +4471,7 @@ async fn fill_media_buffer(
                         }
                     }
                 }
-                Err::<(usize, Vec<u8>), (usize, CommandError)>((index, last))
+                Err::<(usize, Option<Vec<u8>>), (usize, CommandError)>((index, last))
             }
         },
     ))
@@ -4371,6 +4480,8 @@ async fn fill_media_buffer(
     while let Some(result) = stream.next().await {
         match result {
             Ok((index, body)) => {
+                /* Ranges past the head were appended while they streamed. */
+                let Some(body) = body else { continue };
                 // The first chunk is the only one that can prove the container.
                 if index == 0 {
                     if let Err(error) = verify_audio_container(&body, &mime_type) {
@@ -6286,6 +6397,28 @@ mod tests {
         // A read spanning three chunks is reassembled in order.
         assert_eq!(buffer.read(2, 8), vec![3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(buffer.read(0, 0), vec![1]);
+    }
+
+    /// A range body is appended as it arrives, so the decoder keeps reading instead of
+    /// draining the 128 KiB head and stalling until the whole rest of the file lands.
+    #[test]
+    fn media_buffer_appends_a_streaming_range() {
+        let mut buffer = MediaBuffer::pending(10, 2);
+        buffer.put(0, vec![1, 2, 3, 4]);
+        assert_eq!(buffer.contiguous_len(), 4);
+
+        buffer.append(1, &[5, 6]);
+        assert_eq!(buffer.contiguous_len(), 6, "partial tail is already readable");
+
+        buffer.append(1, &[7, 8, 9, 10]);
+        assert_eq!(buffer.contiguous_len(), 10);
+        assert_eq!(buffer.read(4, 9), vec![5, 6, 7, 8, 9, 10]);
+
+        // A retried range starts over rather than duplicating the bytes it already wrote.
+        buffer.clear(1);
+        assert_eq!(buffer.contiguous_len(), 4);
+        buffer.append(1, &[5, 6]);
+        assert_eq!(buffer.contiguous_len(), 6);
     }
 
     /// A typical song is 2-4 MB. A fixed 4 MiB range size meant exactly those never split at
