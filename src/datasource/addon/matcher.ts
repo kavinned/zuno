@@ -99,12 +99,16 @@ function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): bool
   );
 }
 
-function artistEvidence(target: MatchTarget, row: AddonSearchRow): ArtistEvidence {
-  const rowNames = splitNames(row.artist);
-  const targetNames = [
+function targetArtistNames(target: MatchTarget): string[] {
+  return [
     ...(target.artists ?? []).map((entry) => normalize(entry.name)).filter(Boolean),
     ...splitNames(target.artist),
   ];
+}
+
+function artistEvidence(target: MatchTarget, row: AddonSearchRow): ArtistEvidence {
+  const rowNames = splitNames(row.artist);
+  const targetNames = targetArtistNames(target);
   if (targetNames.length === 0 || rowNames.length === 0) return "none";
   if (normalize(target.artist) === normalize(row.artist ?? "")) return "exact";
   const targetSet = new Set(targetNames);
@@ -117,6 +121,29 @@ function artistEvidence(target: MatchTarget, row: AddonSearchRow): ArtistEvidenc
   const targetArtist = normalize(target.artist);
   if (targetArtist.length > 0 && album.includes(targetArtist)) return "shared";
   return "rejected";
+}
+
+/**
+ * Whether two credits are probably the same name written in different scripts.
+ *
+ * A Chinese addon often carries the artist in traditional glyphs ("薛之謙") while YouTube
+ * carries the simplified ones ("薛之谦"). Two shared letters out of a short name is far more
+ * than unrelated names share; tight duration still gates the match.
+ */
+function sharesNonLatinGlyphs(left: string, right: string): boolean {
+  if (!hasNonLatinLetter(left) || !hasNonLatinLetter(right)) return false;
+  const a = new Set(left.replace(/[^\p{L}]/gu, ""));
+  const b = new Set(right.replace(/[^\p{L}]/gu, ""));
+  if (a.size < 2 || b.size < 2) return false;
+  const shared = [...a].filter((letter) => b.has(letter)).length;
+  return shared >= 2 && shared >= Math.ceil(Math.min(a.size, b.size) / 2);
+}
+
+function glyphFoldArtistMatches(target: MatchTarget, row: AddonSearchRow): boolean {
+  const rowNames = splitNames(row.artist);
+  return targetArtistNames(target).some(
+    (name) => rowNames.some((rowName) => sharesNonLatinGlyphs(name, rowName)),
+  );
 }
 
 function durationEvidence(
@@ -204,10 +231,18 @@ export function rankAddonCandidates(
       continue;
     }
 
-    const artist = artistEvidence(target, row);
-    if (artist === "rejected") continue;
     const duration = durationEvidence(target.durationSec, row.durationSec);
     if (duration === "rejected") continue;
+
+    let artist = artistEvidence(target, row);
+    if (
+      artist === "rejected"
+      && duration === "tight"
+      && glyphFoldArtistMatches(target, row)
+    ) {
+      artist = "shared";
+    }
+    if (artist === "rejected") continue;
 
     ranked.push({
       candidate,

@@ -203,4 +203,25 @@ const blankAlbumScores = rankAddonCandidates(
 ).map((entry) => entry.score);
 equal(blankAlbumScores[0], blankAlbumScores[1], "a blank album does not earn the album score");
 
+/* A Chinese addon often credits the same artist in traditional glyphs ("薛之謙" for "薛之谦"). */
+const cjkTarget: MatchTarget = { title: "其实", artist: "薛之谦", durationSec: 242.16 };
+const cjkRow: AddonSearchRow = {
+  id: "nebula:1",
+  title: "其实",
+  artist: "薛之謙",
+  durationSec: 242,
+  format: "flac",
+};
+equal(rank([cjkRow], undefined, cjkTarget).length, 1, "traditional glyphs in the artist credit still match");
+equal(
+  rank([{ ...cjkRow, artist: "薛鹏" }], undefined, cjkTarget).length,
+  0,
+  "a different artist sharing one glyph is still rejected",
+);
+equal(
+  rank([{ ...cjkRow, durationSec: 330 }], undefined, cjkTarget).length,
+  0,
+  "glyph-folded artist credit does not rescue a duration mismatch",
+);
+
 console.log("addon/matcher: ok");
