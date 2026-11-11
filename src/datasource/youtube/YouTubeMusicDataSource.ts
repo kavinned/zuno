@@ -545,6 +545,7 @@ export class YouTubeMusicDataSource extends DataSource {
   private substitutionInfo(match: AddonSubstitutionMatch): AddonSubstitutionInfo {
     return {
       trackId: match.track.id,
+      sourceId: match.track.addon?.sourceId,
       format: match.track.addon?.format,
       sampleRateHz: match.stream.sampleRateHz,
       bitDepth: match.stream.bitDepth,

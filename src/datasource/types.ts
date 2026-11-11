@@ -17,6 +17,8 @@ export interface AddonStreamStats {
 
 export interface AddonSubstitutionInfo extends AddonStreamStats {
   trackId: string;
+  /** The addon source that served the substituted stream. */
+  sourceId?: string;
   format?: string;
   lossless: boolean;
 }

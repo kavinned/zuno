@@ -28,6 +28,7 @@ import {
   setDefaultPlaylist,
   useDefaultPlaylist,
 } from "../../settings/defaultPlaylist";
+import { useAddonSources } from "../../settings/addonSources";
 import {
   getLocalPlaylistItems,
   isLocalPlaylist,
@@ -184,6 +185,8 @@ export function TrackInfo() {
     };
   }, [currentTrack?.id, targetPlaylist?.id]);
 
+  const addonSources = useAddonSources().sources;
+
   if (!currentTrack) {
     return null;
   }
@@ -204,6 +207,10 @@ export function TrackInfo() {
     : substitution;
   const audioInfoText = formatAddonAudioInfo(audioInfo ?? {});
   const addonFormat = isAddonTrack ? currentTrack.addon?.format : substitution?.format;
+  const addonSourceId = isAddonTrack ? currentTrack.addon?.sourceId : substitution?.sourceId;
+  const addonSource = addonSourceId === undefined
+    ? undefined
+    : addonSources.find((source) => source.id === addonSourceId)?.label;
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -320,6 +327,9 @@ export function TrackInfo() {
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Addon stream
                 </span>
+                {addonSource !== undefined && (
+                  <span className="text-xs text-muted-foreground">{addonSource}</span>
+                )}
                 <span className="text-xs text-foreground">
                   {audioInfoText !== "" ? audioInfoText : "Format details unavailable"}
                 </span>
