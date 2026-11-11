@@ -24,7 +24,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   { tab: "playback", category: "Playback", title: "Restore tabs and queues", description: "Restore your playback session after restarting." },
   { tab: "playback", category: "Playback", title: "Audio engine", description: "Choose the playback method and authenticated streaming." },
   { tab: "system", category: "Library", title: "Local music", description: "Create playlists from folders on this computer." },
-  { tab: "system", category: "Library", title: "Addon sources", description: "Servers whose tracks show up in search alongside YouTube." },
+  { tab: "system", category: "Library", title: "Addon sources", description: "Servers that supply lossless streams in place of YouTube's audio." },
   { tab: "system", category: "Library", title: "Cache", description: "Set cache size and clear cached content." },
   { tab: "system", category: "Library", title: "Downloads", description: "Set offline storage limits and remove downloads." },
   { tab: "system", category: "Library", title: "Streaming quality", description: "Choose quality for music played over the network." },

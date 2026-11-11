@@ -7,6 +7,12 @@ import { normalizeAddonBaseUrl, redactedAddonUrl } from "../../datasource/addon/
 import { addonRegistry, addonService } from "../../player/playerStore";
 import { useAddonSources } from "./addonSources";
 
+/**
+ * One probe sweep per app run. This card remounts whenever its tab or the settings search
+ * remounts it, and re-probing every source with bypassCache only invites rate limits.
+ */
+let probeSweepStarted = false;
+
 const CARD = "flex flex-col gap-5 rounded-2xl bg-card/50 p-6";
 const FIELD =
   "min-w-0 rounded-lg bg-background px-2.5 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-inset focus:ring-ring/60";
@@ -17,8 +23,10 @@ const DESTRUCTIVE_BUTTON =
 
 const HEALTH_LABELS: Record<AddonHealth, string> = {
   ok: "Working",
-  unreachable: "Unreachable",
-  rejected: "Not usable",
+  /* Timeouts, 5xx and network failures all land here; the label names what you can act on. */
+  unreachable: "Not responding",
+  /* A 4xx answer. A missing stored URL is named separately, so this stays honest. */
+  rejected: "Rejected",
   gated: "Needs a lossless output",
   "rate-limited": "Rate limited",
 };
@@ -73,7 +81,7 @@ function SourceRow({
           source.lastHealth === "ok" ? "text-primary" : "text-muted-foreground",
         )}
       >
-        {healthLabel(source.lastHealth)}
+        {source.baseUrl === "" ? "No URL stored" : healthLabel(source.lastHealth)}
       </span>
 
       <Switch
@@ -142,8 +150,10 @@ export function AddonSourcesSettings() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Best effort, once, no polling: probe what is already enabled so health is not stale.
+  // Best effort, once per run, no polling: probe what is already enabled so health is not stale.
   useEffect(() => {
+    if (probeSweepStarted) return;
+    probeSweepStarted = true;
     let cancelled = false;
     void addonRegistry
       .ensureLoaded()
@@ -308,7 +318,7 @@ export function AddonSourcesSettings() {
             Addon sources
           </h2>
           <p className="text-sm text-muted-foreground">
-            Servers whose tracks show up in search alongside YouTube.
+            Servers that supply lossless streams in place of YouTube's audio.
           </p>
         </div>
       </div>
