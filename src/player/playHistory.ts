@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { Track } from "../datasource/types";
 import { logInternalWarn } from "../internal/logging";
 import { getAppSetting, setAppSetting } from "../internal/appSettings";
+import { serializePersisted } from "../internal/persistedJson";
 
 const STORAGE_KEY = "zuno.play-history.v1";
 
@@ -75,7 +76,7 @@ export async function hydratePlayHistory(): Promise<void> {
 function write(entries: PlayHistoryEntry[]): void {
   if (typeof window === "undefined") return;
   const trimmed = entries.slice(0, MAX_ENTRIES);
-  cachedRaw = JSON.stringify(trimmed);
+  cachedRaw = serializePersisted(trimmed);
   cached = trimmed;
   try {
     localStorage.setItem(STORAGE_KEY, cachedRaw);
