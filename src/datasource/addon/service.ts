@@ -20,7 +20,7 @@ import type {
   AddonStreamAnswer,
   AddonTrackRef,
 } from "./types";
-import { isAddonTrackId, sourceFingerprint } from "./url";
+import { addonMediaHostAllowed, isAddonTrackId, sourceFingerprint } from "./url";
 
 /** The four client methods the service needs; tests can fake them without the network. */
 export interface AddonClientLike {
@@ -277,12 +277,14 @@ export class AddonService {
       } catch (error) {
         return this.recordFailure(id, error, "unreachable");
       }
+      this.trackCooldown(id, "ok");
       await registry.recordProbe(id, "ok", null);
       return "ok";
     }
 
     const health: AddonHealth =
       manifest.checkValidLossless && !this.deps.outputCapable() ? "gated" : "ok";
+    this.trackCooldown(id, health);
     await registry.recordProbe(id, health, manifest);
     return health;
   }
@@ -366,12 +368,16 @@ export class AddonService {
     try {
       answer = await client.resolveStream(ref.trackId, quality, { signal: options.signal });
     } catch (error) {
-      if (
-        error instanceof AddonRequestError
-        && error.kind === "miss"
-        && cachedRow?.streamUrl !== undefined
-      ) {
-        answer = answerFromRow(cachedRow);
+      /*
+       * A search row may carry its own stream URL. Substitution reaches resolve with only the
+       * in-memory ref (the persisted row has no URL), so the ref is the fallback that actually
+       * exists on that path; the cached row covers direct playback.
+       */
+      const rowStreamUrl = cachedRow?.streamUrl ?? ref.streamUrl;
+      if (error instanceof AddonRequestError && error.kind === "miss" && rowStreamUrl !== undefined) {
+        answer = cachedRow?.streamUrl !== undefined
+          ? answerFromRow(cachedRow)
+          : { url: rowStreamUrl, format: ref.format };
       } else {
         throw error;
       }
@@ -381,6 +387,11 @@ export class AddonService {
     const accepted = acceptAddonStream(answer, engine);
     if (!accepted.ok) throw new Error(streamFailureMessage(accepted.reason));
     const stream = accepted.stream;
+
+    /* A public addon's resolve answer is untrusted; do not let it drive requests into the LAN. */
+    if (!addonMediaHostAllowed(stream.url, source.baseUrl)) {
+      throw new Error("The addon returned a media address on a private network.");
+    }
 
     let contentLength = answerContentLength(answer);
     /*
@@ -677,12 +688,16 @@ export class AddonService {
    * flags for a null manifest, which would drop a gate or a downloads restriction after a
    * transient failure, so the source's own manifest fields are handed back unchanged.
    */
-  private async recordHealth(source: AddonSourceConfig, health: AddonHealth): Promise<void> {
+  private trackCooldown(id: string, health: AddonHealth): void {
     if (health === "rejected") {
-      this.rejectedUntil.set(source.id, this.now() + REJECTED_COOLDOWN_MS);
+      this.rejectedUntil.set(id, this.now() + REJECTED_COOLDOWN_MS);
     } else {
-      this.rejectedUntil.delete(source.id);
+      this.rejectedUntil.delete(id);
     }
+  }
+
+  private async recordHealth(source: AddonSourceConfig, health: AddonHealth): Promise<void> {
+    this.trackCooldown(source.id, health);
     /* A concurrent probe may have learned stricter flags since the caller's snapshot. */
     const current = this.deps.registry.get(source.id) ?? source;
     const manifest: AddonManifest = {

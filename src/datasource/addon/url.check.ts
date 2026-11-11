@@ -2,6 +2,7 @@ export {};
 
 import {
   addonCompositeId,
+  addonMediaHostAllowed,
   buildAddonSearchUrl,
   buildAddonStreamUrl,
   isAddonTrackId,
@@ -21,6 +22,22 @@ function equal(actual: unknown, expected: unknown, message: string): void {
 const base = normalizeAddonBaseUrl("https://host.example/abc123secret/manifest.json");
 equal(base.baseUrl, "https://host.example/abc123secret", "manifest URL normalises to base");
 equal(base.insecure, false, "https is secure");
+check(
+  !addonMediaHostAllowed("http://127.0.0.1/admin", "https://host.example/secret"),
+  "a public addon may not point media at loopback",
+);
+check(
+  !addonMediaHostAllowed("http://192.168.1.1/admin", "https://host.example/secret"),
+  "a public addon may not point media at the LAN",
+);
+check(
+  addonMediaHostAllowed("http://127.0.0.1/audio", "http://localhost:8787/secret"),
+  "a local addon may serve media from loopback",
+);
+check(
+  addonMediaHostAllowed("https://cdn.example/a.flac", "https://host.example/secret"),
+  "public media stays allowed",
+);
 equal(
   normalizeAddonBaseUrl("https://host.example/abc123secret/").baseUrl,
   "https://host.example/abc123secret",

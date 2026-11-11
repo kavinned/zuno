@@ -6596,12 +6596,14 @@ export class YouTubeMusicDataSource extends DataSource {
           trackId: track.id,
           mimeType: match.stream.mimeType,
           /*
-           * Deliberately no contentLength: with a known size Rust publishes a pending buffer and
-           * returns before the download finishes, so a CDN failure afterward would be invisible
-           * here and YouTube would never be tried. Without it Rust downloads synchronously, and a
-           * failure throws into the catch below.
+           * No contentLength and synchronous: Rust would otherwise probe the addon length
+           * itself, publish a pending buffer and return before the body arrives, so a CDN
+           * failure afterward would be invisible here and YouTube would never be tried. A
+           * synchronous fetch downloads and validates before answering, and throws into the
+           * catch below.
            */
           style: "addon",
+          synchronous: true,
         });
         if (payload.byteLength > 0) {
           return {

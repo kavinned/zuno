@@ -26,6 +26,10 @@ check(!acceptAddonStream({ url: "https://cdn/a", format: "ape" }, "rust").ok, "u
 check(!acceptAddonStream({ url: 42 as unknown as string, format: "flac" }, "rust").ok, "malformed url refused without throwing");
 check(!acceptAddonStream({ url: "https://cdn/a", format: 3 as unknown as string }, "rust").ok, "malformed format refused without throwing");
 check(!acceptAddonStream({ url: "https://cdn/a", format: "flac", audioModes: "ATMOS" as unknown as string[] }, "rust").ok, "string audioModes still refuses atmos");
+const unknownMime = acceptAddonStream({ url: "https://cdn/a", format: "flac", mimeType: "audio/x-flac" }, "rust");
+check(unknownMime.ok && unknownMime.stream.codec === "flac", "an unknown mime falls back to the format");
+check(unknownMime.ok && unknownMime.stream.mimeType === "audio/flac", "the fallback supplies a canonical mime");
+check(!acceptAddonStream({ url: "https://cdn/a", mimeType: "audio/unknown" }, "rust").ok, "an unknown mime without a codec still refuses");
 
 check(normalizeSampleRate(44.1) === 44100, "kHz promoted");
 check(normalizeSampleRate(48000) === 48000, "Hz preserved");

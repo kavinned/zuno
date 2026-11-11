@@ -42,6 +42,25 @@ function isAllowedHttpHost(hostname: string): boolean {
   return octets !== null && isPrivateIpv4(octets);
 }
 
+/**
+ * Whether an addon may point its media at this host.
+ *
+ * A public addon is untrusted input, so a resolve answer aimed at loopback or the LAN is
+ * refused. A local addon is expected to serve its own media from localhost, so it keeps that
+ * freedom — the base URL's own reachability is the trust signal.
+ */
+export function addonMediaHostAllowed(mediaUrl: string, baseUrl: string): boolean {
+  let media: URL;
+  let base: URL;
+  try {
+    media = new URL(mediaUrl);
+    base = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  return !isAllowedHttpHost(media.hostname) || isAllowedHttpHost(base.hostname);
+}
+
 export function normalizeAddonBaseUrl(input: string): NormalizedAddonBaseUrl {
   const trimmed = input.trim();
   if (!trimmed) throw new AddonUrlError("An addon URL is required.");

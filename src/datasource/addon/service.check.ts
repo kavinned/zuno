@@ -1188,4 +1188,46 @@ function matchRow(overrides: Partial<AddonSearchRow> = {}): AddonSearchRow {
   equal(created[0].searchCalls, 2, "a rejected source is retried after the cooldown");
 }
 
+{
+  const sourceId = SOURCE_A;
+  let clock = 1_000_000;
+  const script: Script = { searchError: new AddonRequestError("rejected", 403) };
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://probe-clears.example/secret" }],
+    now: () => clock,
+    script: () => script,
+  });
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a rejected search is a miss");
+  equal(created[0].searchCalls, 1, "the rejected source was searched once");
+
+  script.searchError = undefined;
+  script.searchResult = [matchRow()];
+  script.streamAnswer = () => ({ url: "https://cdn.example/a.flac", format: "flac" });
+  equal(await service.probeSource(sourceId), "ok", "a recovered probe reports ok");
+
+  clock += 1_000;
+  const match = await service.findLosslessMatch(youtubeTarget);
+  check(match !== null, "a healthy probe clears the cooldown in the same clock window");
+  equal(created[0].searchCalls, 3, "the probe and the match both contact the source again");
+}
+
+{
+  const sourceId = SOURCE_A;
+  const { service } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://row-url.example/secret" }],
+    script: () => ({
+      searchResult: [matchRow({ id: "direct", streamUrl: "https://cdn.example/direct.flac" })],
+      streamError: () => new AddonRequestError("miss", 404),
+    }),
+  });
+
+  const match = await service.findLosslessMatch(youtubeTarget);
+  equal(
+    match?.track.addon?.trackId,
+    "direct",
+    "a /stream miss falls back to the URL the search row supplied",
+  );
+}
+
 console.log("addon/service: ok");

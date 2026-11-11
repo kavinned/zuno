@@ -59,7 +59,11 @@ export class AddonRegistry {
 
   ensureLoaded = (): Promise<void> => {
     if (this.state.loaded) return Promise.resolve();
-    this.loading ??= this.hydrate();
+    this.loading ??= this.hydrate().catch((error) => {
+      /* A failed hydrate must be retried, not cached, while the caller still sees the error. */
+      this.loading = null;
+      throw error;
+    });
     return this.loading;
   };
 

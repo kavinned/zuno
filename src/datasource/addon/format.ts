@@ -109,9 +109,9 @@ function hasRefusedFormat(answer: AddonStreamAnswer): boolean {
 
 function resolveKind(answer: AddonStreamAnswer): { mimeType: string; kind: StreamKind } | null {
   const explicitMime = mimeToken(answer.mimeType);
-  if (explicitMime !== "") {
-    const baseKind = KIND_BY_MIME[explicitMime];
-    if (baseKind === undefined) return null;
+  const baseKind = explicitMime === "" ? undefined : KIND_BY_MIME[explicitMime];
+  /* An unrecognised mime falls through to the container/codec fields, which may still know. */
+  if (baseKind !== undefined) {
     const codec = firstToken(answer.codec, answer.fileCodec);
     const format = normalized(answer.format);
     if (explicitMime === "audio/mp4") {

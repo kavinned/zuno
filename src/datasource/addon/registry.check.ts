@@ -19,6 +19,7 @@ function equal(actual: unknown, expected: unknown, message: string): void {
 class MemoryStorage implements AddonRegistryStorage {
   readonly writes: PersistedAddonSource[][] = [];
   reads = 0;
+  failReads = 0;
   private raw: unknown;
 
   constructor(raw: unknown = null) {
@@ -27,6 +28,10 @@ class MemoryStorage implements AddonRegistryStorage {
 
   async read(): Promise<PersistedAddonSource[]> {
     this.reads += 1;
+    if (this.failReads > 0) {
+      this.failReads -= 1;
+      throw new Error("storage unavailable");
+    }
     return parseAddonSources(this.raw);
   }
 
@@ -216,5 +221,21 @@ for (const write of storage.writes) {
   check(!serialized.includes("host.example"), "no write ever persists a base URL path");
   check(!serialized.includes("other.example"), "no write ever persists a base URL host");
 }
+
+const flakyStorage = new MemoryStorage({ version: 1, sources: [persisted()] });
+flakyStorage.failReads = 1;
+const flaky = new AddonRegistry(flakyStorage, new MemorySecrets());
+let hydrateRejected = false;
+try {
+  await flaky.ensureLoaded();
+} catch {
+  hydrateRejected = true;
+}
+check(hydrateRejected, "a failed hydrate stays visible to the caller");
+equal(flaky.getState().loaded, false, "a failed hydrate leaves the registry unloaded");
+await flaky.ensureLoaded();
+check(flaky.getState().loaded, "a later ensureLoaded retries after a failed hydrate");
+equal(flaky.list().length, 1, "the retry loads the persisted sources");
+equal(flakyStorage.reads, 2, "the retry reads storage again");
 
 console.log("addon/registry: ok");

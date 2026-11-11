@@ -155,21 +155,21 @@ await losslessAddonSource.getStreamData(track);
 equal(substitutionCalls, 0, "an addon track never substitutes");
 
 /*
- * Native engine: Rust publishes a pending buffer and answers before the download finishes when
- * it knows the length, so a CDN failure afterward is invisible to the caller. The substitution
- * fetch must therefore omit `contentLength`, forcing the synchronous path whose failure can be
- * caught and turned into a YouTube fallback.
+ * Native engine: Rust can publish a pending buffer and answer before the download finishes,
+ * so a CDN failure afterward is invisible to the caller. The substitution fetch must ask for
+ * the synchronous mode, whose failure can be caught and turned into a YouTube fallback.
  */
 const nativeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 const fakeInvoke = async (cmd: string, args: Record<string, unknown> = {}) => {
   nativeCalls.push({ cmd, args });
   if (cmd !== "fetch_audio_source") return undefined;
   if (args.style === "addon") {
-    if (args.contentLength === undefined) throw new Error("addon fetch failed");
+    /* The synchronous fetch is the one whose failure reaches the caller as an error. */
+    if (args.synchronous === true) throw new Error("addon fetch failed");
     return {
       url: "http://127.0.0.1/audio/stream-x",
       mimeType: "audio/flac",
-      byteLength: args.contentLength,
+      byteLength: 4321,
     };
   }
   return { url: "http://127.0.0.1/audio/youtube", mimeType: "audio/mp4", byteLength: 4321 };
@@ -209,5 +209,6 @@ const substitutionFetch = nativeCalls.find(
 );
 check(substitutionFetch !== undefined, "the addon fetch was attempted");
 equal(substitutionFetch.args.contentLength, undefined, "the native substitution fetch omits contentLength");
+equal(substitutionFetch.args.synchronous, true, "the native substitution fetch is synchronous");
 
 console.log("addon/routing: ok");
