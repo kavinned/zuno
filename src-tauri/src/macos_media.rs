@@ -154,7 +154,7 @@ async fn load_artwork_bytes(app: &AppHandle, url: &str) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    let response = crate::http_client_builder().build().ok()?.get(url).send().await.ok()?;
+    let response = crate::http_client(None).get(url).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }

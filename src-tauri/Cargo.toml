@@ -1,6 +1,6 @@
 [package]
 name = "zuno"
-version = "1.4.0"
+version = "1.5.0"
 description = "Zuno - a desktop music client"
 authors = ["you"]
 edition = "2021"
@@ -18,12 +18,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+# `unstable` is what allows more than one webview in a window: the sign-in window puts a
+# read-only address bar above Google's page.
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "unstable"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-localhost = "2"
 tauri-plugin-single-instance = "2"
-portpicker = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "stream"] }
@@ -53,6 +54,7 @@ symphonia = { version = "0.5", default-features = false, features = ["mkv", "ogg
 opus = "0.3.1"
 # Was macOS-only (the session encryption key); account slot ids need it on every platform now.
 rand = "0.8"
+rodio-wsola = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 aes-gcm = "0.10"
@@ -61,6 +63,8 @@ objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSGeometry", "NSObject", "NSString", "NSValue", "objc2-core-foundation"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Already in the tree via wry; declared to reach ICoreWebView2_19 (memory target level).
+webview2-com = "0.38"
 windows = { version = "0.61.3", features = [
   "Foundation",
   "Media",
@@ -68,6 +72,7 @@ windows = { version = "0.61.3", features = [
   "Storage_Streams",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Security_Cryptography",
   "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_ProcessStatus",
@@ -78,5 +83,14 @@ windows = { version = "0.61.3", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-souvlaki = "0.7"
+# zbus: souvlaki's dbus backend drains one event per second, so MPRIS lagged tracks behind (#182).
+souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
+# Already in the tree via tauri; used to size the sign-in window's address bar in GTK's box.
+gtk = "0.18"
 
+
+# Smaller binary, less mapped code. No `panic = "abort"`: an audio-thread panic must not kill the app.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

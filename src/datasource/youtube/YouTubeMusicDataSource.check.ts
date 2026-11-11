@@ -6,7 +6,7 @@
  */
 export {};
 
-import { loadYouTubeI, removeAccountOutcome } from "./YouTubeMusicDataSource";
+import { artistFromSubtitle, removeAccountOutcome } from "./YouTubeMusicDataSource";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -38,15 +38,11 @@ check(
 
 console.log("YouTubeMusicDataSource.removeAccountOutcome: ok");
 
-const p1 = loadYouTubeI();
-const p2 = loadYouTubeI();
-check(p1 === p2, "loadYouTubeI returns the same in-flight promise for concurrent callers");
+// An album card on an artist's own page names no artist; its year is not one (#169).
+check(artistFromSubtitle("Album • 2021") === undefined, "type and year alone name no artist");
+check(artistFromSubtitle("2016") === undefined, "a bare year is not an artist");
+check(artistFromSubtitle("Radiohead • 1995") === "Radiohead", "an artist beside a year survives");
+check(artistFromSubtitle("Single • The 1975") === "The 1975", "a name containing digits is still a name");
+check(artistFromSubtitle(undefined) === undefined, "no subtitle, no artist");
 
-const module = await p1;
-check(typeof module.Innertube?.create === "function", "loaded Innertube client has create method");
-check(typeof module.Platform?.shim === "object", "loaded Platform has shim object");
-check(typeof module.YTNodes?.MusicShelf === "function", "loaded YTNodes exposes node classes");
-check(typeof module.ClientType?.MUSIC === "string", "loaded ClientType exposes client constants");
-
-console.log("YouTubeMusicDataSource.loadYouTubeI: ok");
-
+console.log("YouTubeMusicDataSource.artistFromSubtitle: ok");

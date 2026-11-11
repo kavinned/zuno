@@ -290,6 +290,8 @@ export class AudioEngine {
   private fadeIntervalId: number | null = null;
   private muted = false;
   private playbackRate = 1;
+  /** Rust engine only (#186): the other engines have no pitch control. */
+  private pitchSemitones = 0;
   private onEnded: (() => void) | null = null;
   private endedAt: { positionSec: number; durationSec: number } | null = null;
   private loadRequestId = 0;
@@ -792,6 +794,14 @@ export class AudioEngine {
     logInternalInfo("AudioEngine rust preloaded", { trackId });
   }
 
+  /** Arms the Rust engine's own gapless handover to `videoId`, or disarms it with `null`. */
+  queueGapless(videoId: string | null): void {
+    if (!this.useRustAudio) return;
+    void rustAudio.queueNext(videoId).catch((error: unknown) => {
+      rustAudio.warn("AudioEngine rust queue next failed", error);
+    });
+  }
+
   /** Whether a transition to `videoId` can skip loading entirely. */
   hasPreloaded(videoId: string): boolean {
     if (this.useRustAudio) return this.rustStandbyTrackId === videoId;
@@ -1021,7 +1031,7 @@ export class AudioEngine {
     this.rustDurationSec = duration;
     this.currentVideoId = videoId;
     await rustAudio.setVolume(this.volume, this.muted);
-    await rustAudio.setRate(this.playbackRate);
+    await rustAudio.setRate(this.playbackRate, this.pitchRatio());
     logInternalInfo("AudioEngine rust audio loaded", {
       videoId,
       kind: source.kind,
@@ -1140,9 +1150,7 @@ export class AudioEngine {
   setPlaybackRate(rate: number): void {
     this.playbackRate = Math.min(4, Math.max(0.25, rate));
     if (this.useRustAudio && !this.iframeFallbackActive) {
-      void rustAudio.setRate(this.playbackRate).catch((error: unknown) => {
-        rustAudio.warn("AudioEngine rust rate failed", error);
-      });
+      this.applyRustRate();
     }
     this.applyNativeAudioSettings();
     this.player?.setPlaybackRate?.(this.playbackRate);
@@ -1150,6 +1158,26 @@ export class AudioEngine {
 
   getPlaybackRate(): number {
     return this.playbackRate;
+  }
+
+  /** Semitones up or down, without changing speed. */
+  setPitch(semitones: number): void {
+    this.pitchSemitones = Math.min(12, Math.max(-12, Math.round(semitones)));
+    if (this.useRustAudio && !this.iframeFallbackActive) this.applyRustRate();
+  }
+
+  getPitch(): number {
+    return this.pitchSemitones;
+  }
+
+  private pitchRatio(): number {
+    return 2 ** (this.pitchSemitones / 12);
+  }
+
+  private applyRustRate(): void {
+    void rustAudio.setRate(this.playbackRate, this.pitchRatio()).catch((error: unknown) => {
+      rustAudio.warn("AudioEngine rust rate failed", error);
+    });
   }
 
   private applyOutputVolume(): void {

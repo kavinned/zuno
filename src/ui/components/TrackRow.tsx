@@ -12,14 +12,14 @@ import { Tooltip } from "@/components/motion/tooltip";
 import { CheckActiveIcon, CheckIcon, DislikeActiveIcon, DislikeIcon, DownloadIcon, HeartActiveIcon, HeartIcon, ListIcon, PlaylistAddIcon, PlayActiveIcon } from "@/ui/icons";
 import { Loader, MusicVisualizer } from "@/components/motion/loader";
 import {
+  useUnavailableOffline,
   queueDownload,
   removeDownload,
-  useTrackDownloadProgress,
-  useTrackOfflineStatus,
-  useUnavailableOffline,
+  useOfflineProgress,
+  useOfflineStatus,
 } from "../../player/offlineStore";
 import type { Track, TrackRating } from "../../datasource/types";
-import { libraryController, useLibraryState } from "../../player/playerStore";
+import { libraryController, useLibrarySelector } from "../../player/playerStore";
 import { useAddonDownloadsAllowed } from "../settings/addonSources";
 import { useTrackContextMenu } from "./TrackContextMenu";
 import { ArtistLinks } from "./ArtistLinks";
@@ -83,15 +83,16 @@ interface TrackRowProps extends PassthroughButtonProps {
  * Unlike the other hover actions this one stays visible once a track is downloaded — that is
  * state you need to see without hovering, the same reasoning as the queue's stop marker.
  */
+function DownloadProgress({ title }: { title: string }) {
+  const progress = useOfflineProgress();
+  return <Loader variant="percent" size={18} value={progress ?? undefined} label={`Downloading ${title}`} />;
+}
+
 function DownloadAction({ track }: { track: Track }) {
   // Before any early return: hooks cannot be called conditionally.
   const addonDownloadsAllowed = useAddonDownloadsAllowed(track);
-  // Subscribing to track-targeted status and progress hooks ensures:
-  // 1. Idle tracks do not re-render on progress ticks (progress snapshot is null).
-  // 2. Only the track currently downloading re-renders as percentage updates.
-  // 3. Status changes (queued -> downloading -> ready) only re-render the transitioning tracks.
-  const status = useTrackOfflineStatus(track.id);
-  const progress = useTrackDownloadProgress(track.id);
+  // This row's status only: a whole-store subscription re-rendered every row on each progress tick.
+  const status = useOfflineStatus(track.id);
   const isDownloading = status === "downloading";
 
   if (track.source === "local") return null;
@@ -138,12 +139,7 @@ function DownloadAction({ track }: { track: Track }) {
           /* Fed by the real byte count streamed from Rust. When the response has no
              Content-Length the store reports null and this falls back to the sweeping
              animation, which is honest about not knowing. */
-          <Loader
-            variant="percent"
-            size={18}
-            value={progress ?? undefined}
-            label={`Downloading ${track.title}`}
-          />
+          <DownloadProgress title={track.title} />
         ) : status === "queued" ? (
           <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
         ) : status === "ready" ? (
@@ -216,13 +212,11 @@ function QuickAction({
  */
 function RatingActions({ track }: { track: Track }) {
   const { rateTrack } = useTrackContextMenu();
-  const libraryState = useLibraryState();
+  const rating = useLibrarySelector(() => libraryController.getTrackRating(track.id));
+  const isPending = useLibrarySelector((state) => state.pendingLikeTrackIds.has(track.id));
 
   // Only YouTube tracks have a rating to set, and a signed-out session has nowhere to put one.
   if (track.source !== "youtube") return null;
-
-  const rating = libraryController.getTrackRating(track.id);
-  const isPending = libraryState.pendingLikeTrackIds.has(track.id);
 
   const button = (target: Exclude<TrackRating, "none">, icon: ReactNode, label: string) => {
     const isActive = rating === target;
@@ -580,15 +574,12 @@ export const TrackRow = memo(function TrackRow({
             {track.title}
           </span>
           {track.isExplicit && <ExplicitBadge />}
-          {track.source === "addon" && <AddonBadge format={track.addon?.format} />}
         </span>
-        {/* Addon artists have no artist id to navigate to, so their names stay plain text. */}
         <ArtistLinks
           className="truncate text-xs text-muted-foreground"
           artists={track.artists}
           fallback={track.artist}
           suppressArtistId={suppressArtistId}
-          interactive={track.source !== "addon"}
         />
       </span>
 
@@ -600,7 +591,7 @@ export const TrackRow = memo(function TrackRow({
       {showAlbum && (
         <span className="hidden min-w-0 flex-1 basis-0 truncate text-xs text-muted-foreground lg:block">
           {track.album
-            ? (openAlbumForTrack && track.source === "youtube" ? (
+            ? (openAlbumForTrack && track.source !== "local" ? (
               /*
                 A span with role="link", not an anchor or a button: the row itself is a
                 <button>, and nesting interactive elements is invalid markup that the parser

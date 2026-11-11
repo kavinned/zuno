@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Track } from "../datasource/types";
 import { logInternalError, logInternalInfo, logInternalWarn } from "../internal/logging";
-import { getAppSetting, setAppSetting } from "../internal/appSettings";
+import { getAppSetting, getInvokeErrorMessage, setAppSetting } from "../internal/appSettings";
 import { getDownloadQuality, type AudioQuality } from "../internal/audioQuality";
 import { artworkIdentity, getArtworkUrlCandidates } from "../datasource/youtube/artwork";
 import { isOnline, onReconnect, useOnline } from "../internal/connectivity";
@@ -44,7 +44,8 @@ export interface OfflineState {
   /** Track ids waiting their turn, in order. */
   queued: string[];
   /**
-   * Metadata for everything queued or downloading.
+   * Metadata for everything queued, downloading or failed — a failed row needs its track to
+   * render and to retry.
    *
    * Held in state rather than only in the worker's map because the Downloads list and the
    * player bar both need to render a song that has no file yet — an id alone cannot be shown.
@@ -58,7 +59,6 @@ export interface OfflineState {
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
-const progressListeners = new Set<Listener>();
 let state: OfflineState = {
   entries: {},
   progress: null,
@@ -73,10 +73,6 @@ let pumping = false;
 
 function emit(): void {
   for (const listener of listeners) listener();
-}
-
-function emitProgress(): void {
-  for (const listener of progressListeners) listener();
 }
 
 function asManifest(parsed: unknown): Record<string, OfflineEntry> | null {
@@ -120,9 +116,6 @@ function writeManifest(entries: Record<string, OfflineEntry>): void {
 function setState(next: Partial<OfflineState>): void {
   state = { ...state, ...next };
   emit();
-  if (next.progress !== undefined || next.downloadingId !== undefined) {
-    emitProgress();
-  }
 }
 
 /** Artwork identity → downloaded track holding that cover on disk. */
@@ -219,14 +212,14 @@ export async function hydrateOfflineStore(): Promise<void> {
 export function startOfflineProgressFeed(): void {
   void listen<{ trackId: string; percent: number }>("offline-download-progress", (event) => {
     if (event.payload.trackId !== state.downloadingId) return;
-    state.progress = event.payload.percent;
-    emitProgress();
+    setState({ progress: event.payload.percent });
   });
 }
 
 export function getOfflineStatus(trackId: string): OfflineStatus {
   if (state.entries[trackId]) return "ready";
-  if (state.downloadingId === trackId) return "downloading";
+  // A download cancelled mid-transfer is still `downloadingId` until it lands and is discarded.
+  if (state.downloadingId === trackId && state.pending[trackId]) return "downloading";
   if (state.queued.includes(trackId)) return "queued";
   if (state.failed[trackId]) return "failed";
   return "absent";
@@ -365,7 +358,12 @@ export function setOfflineStreamResolver(resolver: StreamUrlResolver): void {
 export function queueDownload(track: Track): void {
   if (track.source === "local") return;
   if (state.entries[track.id] || state.queued.includes(track.id)) return;
-  if (state.downloadingId === track.id) return;
+  if (state.downloadingId === track.id) {
+    // Asked for again after a cancel, while still in flight: keep it rather than discard it.
+    pendingTracks.set(track.id, track);
+    setState({ pending: { ...state.pending, [track.id]: track } });
+    return;
+  }
 
   const { [track.id]: _cleared, ...failed } = state.failed;
   setState({
@@ -381,10 +379,18 @@ export function queueDownloads(tracks: Track[]): void {
   for (const track of tracks) queueDownload(track);
 }
 
+/** Drops a track from the download list: queued, in flight, or failed. */
 export function cancelDownload(trackId: string): void {
   pendingTracks.delete(trackId);
   const { [trackId]: _dropped, ...pending } = state.pending;
-  setState({ queued: state.queued.filter((id) => id !== trackId), pending });
+  const { [trackId]: _dismissed, ...failed } = state.failed;
+  setState({ queued: state.queued.filter((id) => id !== trackId), pending, failed });
+}
+
+/** Re-queues a failed download from the metadata its failure kept. */
+export function retryDownload(trackId: string): void {
+  const track = state.pending[trackId];
+  if (track && state.failed[trackId]) queueDownload(track);
 }
 
 export async function removeDownload(trackId: string): Promise<void> {
@@ -462,6 +468,12 @@ async function pump(): Promise<void> {
           style: style ?? "youtube",
           contentLength,
         });
+        // ponytail: the transfer cannot be aborted, so a cancel lands and is deleted; add a cancel token to `offline_audio_save` if that waste matters.
+        if (!pendingTracks.has(trackId)) {
+          await invoke("offline_audio_remove", { trackId }).catch(() => {});
+          setState({ downloadingId: null, progress: null });
+          continue;
+        }
         logInternalInfo("offlineStore.download complete", { trackId, byteLength });
         const hasArtwork = await saveArtwork(track);
         pendingTracks.delete(trackId);
@@ -486,16 +498,15 @@ async function pump(): Promise<void> {
           setState({ queued: [trackId, ...state.queued], downloadingId: null, progress: null });
           break;
         }
+        const cancelled = !pendingTracks.has(trackId);
         pendingTracks.delete(trackId);
-        const { [trackId]: _failed, ...pending } = state.pending;
-        const message = error instanceof Error ? error.message : String(error);
+        if (cancelled) {
+          setState({ downloadingId: null, progress: null });
+          continue;
+        }
+        const message = getInvokeErrorMessage(error);
         logInternalError("offlineStore.download failed", error, { trackId });
-        setState({
-          downloadingId: null,
-          progress: null,
-          pending,
-          failed: { ...state.failed, [trackId]: message },
-        });
+        setState({ downloadingId: null, progress: null, failed: { ...state.failed, [trackId]: message } });
       }
     }
   } finally {
@@ -535,9 +546,27 @@ function subscribe(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-function subscribeProgress(listener: Listener): () => void {
-  progressListeners.add(listener);
-  return () => progressListeners.delete(listener);
+export interface DownloadList {
+  /** Null while nothing transfers, or when the transfer was cancelled and is being discarded. */
+  active: Track | null;
+  queued: Track[];
+  failed: Array<{ track: Track; message: string }>;
+  /** Newest first. */
+  recent: OfflineEntry[];
+}
+
+export function selectDownloadList(state: OfflineState, recentLimit: number): DownloadList {
+  const { downloadingId, pending } = state;
+  return {
+    active: (downloadingId && pending[downloadingId]) || null,
+    queued: state.queued.flatMap((id) => (id !== downloadingId && pending[id] ? [pending[id]] : [])),
+    failed: Object.entries(state.failed).flatMap(([id, message]) =>
+      pending[id] ? [{ track: pending[id], message }] : [],
+    ),
+    recent: Object.values(state.entries)
+      .sort((left, right) => right.downloadedAt - left.downloadedAt)
+      .slice(0, recentLimit),
+  };
 }
 
 export function getOfflineState(): OfflineState {
@@ -549,46 +578,16 @@ export function useOfflineEntries(): Record<string, OfflineEntry> {
   return useSyncExternalStore(subscribe, () => state.entries, () => state.entries);
 }
 
+/** One track's status: a long list re-renders only the rows whose status changed. */
+export function useOfflineStatus(trackId: string): OfflineStatus {
+  return useSyncExternalStore(subscribe, () => getOfflineStatus(trackId), () => "absent");
+}
+
+/** Progress of the download in flight, for the one row showing it. */
+export function useOfflineProgress(): number | null {
+  return useSyncExternalStore(subscribe, () => state.progress, () => null);
+}
+
 export function useOfflineState(): OfflineState {
   return useSyncExternalStore(subscribe, getOfflineState, getOfflineState);
-}
-
-/**
- * Live download progress for a specific track.
- *
- * Returns null if the track is not the one currently downloading or if size is unknown.
- * Only triggers re-renders for the track that is actually downloading.
- */
-export function useTrackDownloadProgress(trackId: string | undefined): number | null {
-  return useSyncExternalStore(
-    subscribeProgress,
-    () => (trackId && state.downloadingId === trackId ? state.progress : null),
-    () => (trackId && state.downloadingId === trackId ? state.progress : null),
-  );
-}
-
-/**
- * Live download progress for whatever track is currently downloading.
- */
-export function useOfflineProgress(): number | null {
-  return useSyncExternalStore(
-    subscribeProgress,
-    () => state.progress,
-    () => state.progress,
-  );
-}
-
-/**
- * Offline status for a single track.
- *
- * Subscribing to this hook only re-renders when this specific track's status changes
- * (e.g. absent -> queued -> downloading -> ready), avoiding re-rendering when other
- * tracks in the playlist transition or when download progress ticks arrive.
- */
-export function useTrackOfflineStatus(trackId: string): OfflineStatus {
-  return useSyncExternalStore(
-    subscribe,
-    () => getOfflineStatus(trackId),
-    () => getOfflineStatus(trackId),
-  );
 }

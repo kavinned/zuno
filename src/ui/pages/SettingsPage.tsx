@@ -19,6 +19,7 @@ import {
   useCrossfadeSec,
   useGaplessEnabled,
 } from "../settings/playbackTransitions";
+import { setVolumeNormalization, useVolumeNormalization } from "../settings/volumeNormalization";
 import {
   setSessionRestoreEnabled,
   useSessionRestoreEnabled,
@@ -121,6 +122,7 @@ import {
   setLyricsFontScale,
   useLyricsFontScale,
 } from "../settings/lyricsFontScale";
+import { setZoom, useZoom, ZOOM_LEVELS } from "../settings/zoom";
 import {
   TRANSLATION_LANGUAGES,
   TRANSLATION_OFF,
@@ -137,9 +139,11 @@ import {
 import {
   setForceWindowControls,
   setNativeWindowControls,
+  setWindowOutline,
   setWindowsStyleWindowControls,
   useForceWindowControls,
   useNativeWindowControls,
+  useWindowOutline,
   useWindowsStyleWindowControls,
 } from "../settings/windowControls";
 import {
@@ -214,7 +218,7 @@ import {
   setLastFmScrobblingEnabled,
   useLastFmScrobblingEnabled,
 } from "../settings/lastfm";
-import { isLinux, isTilingWindowManager, subscribeTilingWindowManager } from "../platform";
+import { isLinux, isMacOS, isTilingWindowManager, subscribeTilingWindowManager } from "../platform";
 import { GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL } from "../links";
 import { AccountAvatar, AccountSwitcher, AddGoogleAccountButton, GoogleAccountSwitcher } from "../components/AccountSwitcher";
 import {
@@ -653,9 +657,11 @@ export function SettingsPage({
   const youtubeScrobbling = useYouTubeScrobbling();
   const preferredLyricsSource = usePreferredLyricsSourceId();
   const lyricsFontScale = useLyricsFontScale();
+  const zoom = useZoom();
   const lyricsTranslationLang = useLyricsTranslationLang();
   const madeForYouVisible = useMadeForYouVisible();
   const crossfadeSec = useCrossfadeSec();
+  const volumeNormalization = useVolumeNormalization();
   const gaplessEnabled = useGaplessEnabled();
   const sessionRestoreEnabled = useSessionRestoreEnabled();
   const searchSuggestionsEnabled = useSearchSuggestionsEnabled();
@@ -666,6 +672,7 @@ export function SettingsPage({
   const windowsStyleWindowControls = useWindowsStyleWindowControls();
   const nativeWindowControls = useNativeWindowControls();
   const forceWindowControls = useForceWindowControls();
+  const windowOutline = useWindowOutline();
   const tilingWindowManager = useSyncExternalStore(
     subscribeTilingWindowManager,
     isTilingWindowManager,
@@ -1776,15 +1783,6 @@ export function SettingsPage({
 
             {autostartError && <p className="text-sm text-destructive">{autostartError}</p>}
 
-
-            <SettingToggle
-              title="Minimize to tray"
-              description="Closing the window hides Zuno to the system tray and keeps playing. When off, no tray icon is shown."
-              checked={minimizeToTray}
-              onCheckedChange={setMinimizeToTray}
-            />
-
-
             <SettingToggle
               title="Remember window size and location"
               description="Reopen the main window with its last size and screen position."
@@ -2032,6 +2030,14 @@ export function SettingsPage({
               )}
             </SettingRow>
 
+            {/* Next to the window buttons, because it decides what the close button does. */}
+            <SettingToggle
+              title="Minimize to tray"
+              description="Closing the window hides Zuno to the system tray and keeps playing. When off, no tray icon is shown."
+              checked={minimizeToTray}
+              onCheckedChange={setMinimizeToTray}
+            />
+
             {/* Only reachable when it does something: hidden once native chrome takes over,
                 and off tiling compositors the buttons already show without this. */}
             {isLinux && tilingWindowManager && windowControlStyle !== "native" && (
@@ -2040,6 +2046,16 @@ export function SettingsPage({
                 description="Tiling compositors don't draw window buttons for apps, so they're hidden by default. Turn this on to show them anyway."
                 checked={forceWindowControls}
                 onCheckedChange={setForceWindowControls}
+              />
+            )}
+
+            {/* The OS frame replaces the outline, so the switch would do nothing there. */}
+            {windowControlStyle !== "native" && (
+              <SettingToggle
+                title="Window outline"
+                description="Draw a thin edge around the window so it stands apart from what's behind it."
+                checked={windowOutline}
+                onCheckedChange={setWindowOutline}
               />
             )}
 
@@ -2171,6 +2187,18 @@ export function SettingsPage({
             />
 
             <SettingToggle
+              title="Normalize volume"
+              description={
+                audioEngineMode === "rust"
+                  ? "Turns loud tracks down to YouTube's reference level, so a playlist plays at one volume."
+                  : "Needs the Rust audio engine. The YouTube player already levels volume on its own."
+              }
+              checked={volumeNormalization}
+              onCheckedChange={setVolumeNormalization}
+              disabled={audioEngineMode !== "rust"}
+            />
+
+            <SettingToggle
               title="Gapless playback"
               description="Load the next track while the current one is still playing, so albums and live sets run without a pause between songs."
               checked={gaplessEnabled}
@@ -2291,6 +2319,30 @@ export function SettingsPage({
                 );
               })}
             </div>
+
+            <SettingRow
+              title="App size"
+              description={`Zooms the whole app. ${isMacOS ? "⌘" : "Ctrl"} with + or − works too, and 0 resets it.`}
+            >
+              {(labelId) => (
+                <Select
+                  className="w-52"
+                  value={String(zoom)}
+                  onValueChange={(value) => setZoom(Number(value))}
+                >
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ZOOM_LEVELS.map((level) => (
+                      <SelectItem key={level} value={String(level)}>
+                        {`${Math.round(level * 100)}%`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </SettingRow>
           </section>
 
           <section className={SETTINGS_CARD} aria-labelledby="toolbar-settings-title">

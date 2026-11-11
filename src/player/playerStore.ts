@@ -6,7 +6,7 @@ import { appSettingsAddonStorage, keyringAddonSecrets } from "../datasource/addo
 import { probeAddonLength, tauriAddonRequest } from "../datasource/addon/transport";
 import { YouTubeMusicDataSource } from "../datasource/youtube/YouTubeMusicDataSource";
 import { getAudioEngineMode } from "../ui/settings/audioEngine";
-import { LibraryController } from "./LibraryController";
+import { LibraryController, type LibraryState } from "./LibraryController";
 import { PlayerController, type PlayerSession, type PlayerState } from "./PlayerController";
 import { SearchController } from "./SearchController";
 import { TabManager } from "./TabManager";
@@ -103,6 +103,8 @@ type PlayerControllerMethod =
   | "setPlaybackOrderMode"
   | "setPlaybackRate"
   | "getPlaybackRate"
+  | "setPitch"
+  | "getPitch"
   | "setSleepTimer"
   | "getSleepTimerRemainingMs"
   | "getLyrics"
@@ -177,6 +179,8 @@ class ActivePlayerController implements PlayerControllerActions {
     tabManager.getActivePlayer().setPlaybackOrderMode(mode);
   setPlaybackRate = (rate: number) => tabManager.getActivePlayer().setPlaybackRate(rate);
   getPlaybackRate = () => tabManager.getActivePlayer().getPlaybackRate();
+  setPitch = (semitones: number) => tabManager.getActivePlayer().setPitch(semitones);
+  getPitch = () => tabManager.getActivePlayer().getPitch();
   setSleepTimer = (minutes: number | null) =>
     tabManager.getActivePlayer().setSleepTimer(minutes);
   getSleepTimerRemainingMs = () =>
@@ -291,24 +295,23 @@ export function usePlayerSelector<T>(
   return useStoreSelector(subscribeToPlayer, getPlayerState, select, isEqual);
 }
 
-export function usePlayerSession() {
-  return useSyncExternalStore(subscribeToPlayer, getPlayerSession, getPlayerSession);
-}
-
 /**
- * A slice of the session, cached the same way `usePlayerSelector` caches player state.
- *
- * `exportSession()` rebuilds the queue window with `.slice()` on every export — a fresh array
- * even when the tracks in it have not changed — and every player emit triggers one, including
- * ones with nothing to do with the queue (a volume drag fires dozens per gesture). Plain
- * `usePlayerSession` has no caching, so a component reading `.queue` off it recomputes and
- * re-renders on all of those. Route queue-only reads through here instead.
+ * A slice of the session, cached like `usePlayerSelector`. `exportSession()` builds fresh arrays
+ * on every emit, so subscribing to the whole session would re-render on all of them.
  */
 export function usePlayerSessionSelector<T>(
   select: (session: PlayerSession | null) => T,
   isEqual?: (a: T, b: T) => boolean,
 ): T {
   return useStoreSelector(subscribeToPlayer, getPlayerSession, select, isEqual);
+}
+
+/** A slice of library state; per-row reads go through here so one change re-renders one row. */
+export function useLibrarySelector<T>(
+  select: (state: LibraryState) => T,
+  isEqual?: (a: T, b: T) => boolean,
+): T {
+  return useStoreSelector(subscribeToLibrary, getLibraryState, select, isEqual);
 }
 
 export function useLibraryState() {

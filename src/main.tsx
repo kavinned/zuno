@@ -13,12 +13,15 @@ import {
 import { hydrateMiniPlayerSettings } from "./ui/settings/miniPlayer";
 import { hydratePlayerControlSettings } from "./ui/settings/playerControls";
 import { hydrateQueuePanelSettings } from "./ui/settings/queuePanel";
+import { hydrateSortPreferences } from "./ui/settings/sortPreferences";
 import { hydrateTraySettings } from "./ui/settings/tray";
 import { hydrateMediaSessionSettings } from "./ui/settings/mediaSession";
 import { hydrateAudioQualitySettings } from "./internal/audioQuality";
 import { hydrateAudioEngineMode } from "./ui/settings/audioEngine";
 import { hydrateEqualizer } from "./ui/settings/equalizer";
+import { hydrateVolumeNormalization } from "./ui/settings/volumeNormalization";
 import { hydrateHiddenPlaylists } from "./ui/settings/hiddenPlaylists";
+import { hydratePinnedPlaylists } from "./ui/settings/pinnedPlaylists";
 import { hydrateOutputDevice } from "./ui/settings/audioOutputDevice";
 import { hydrateYouTubeAccountSettings } from "./ui/settings/youtubeAccount";
 import { notifyLocalPlaylistsChanged, syncLocalAudioWatcher } from "./player/localPlaylists";
@@ -33,7 +36,6 @@ import {
 } from "./ui/settings/mainWindowGeometry";
 import { applyPlatformAttributes, detectTilingWindowManager } from "./ui/platform";
 import { hydrateArtworkCache } from "./internal/artworkCache";
-import { DiscordRpcService } from "./player/DiscordRPC";
 import { hydratePlaybackSettings } from "./player/playbackSettings";
 import { hydratePlayHistory } from "./player/playHistory";
 import { hydrateSessionRestoreSetting } from "./ui/settings/sessionRestore";
@@ -44,6 +46,7 @@ import { hydrateHomeSectionSettings } from "./ui/settings/homeSections";
 import { applyRenderEffects, hydrateRenderEffects } from "./ui/settings/renderEffects";
 import { hydrateLyricsTranslation } from "./ui/settings/lyricsTranslation";
 import { hydrateDefaultPlaylist } from "./ui/settings/defaultPlaylist";
+import { hydrateZoom, watchZoomKeys } from "./ui/settings/zoom";
 import { startMemoryReport } from "./internal/memoryReport";
 
 logInternalInfo("main.bootstrap start");
@@ -57,6 +60,7 @@ applyTheme();
 watchSystemTheme();
 applyPaperPcMode();
 applyRenderEffects();
+watchZoomKeys();
 // One line a minute in the app log, so "the renderer is using 220 MB" can be split into heap,
 // DOM, images and subframes instead of guessed at. Settings → Troubleshooting → Open log.
 startMemoryReport();
@@ -67,18 +71,22 @@ void hydrateMainWindowGeometry().then(restoreMainWindowGeometry).catch((error) =
 void Promise.all([
   hydratePaperPcMode(),
   hydrateRenderEffects(),
+  hydrateZoom(),
   hydrateTheme(),
   hydrateWindowControlSettings(),
   hydrateMediaSessionSettings(),
   hydrateMiniPlayerSettings(),
   hydratePlayerControlSettings(),
   hydrateQueuePanelSettings(),
+  hydrateSortPreferences(),
   hydrateTraySettings(),
   hydrateAudioQualitySettings(),
   hydrateAudioEngineMode(),
   // Rust starts flat every launch, so the stored curve has to be pushed back down.
   hydrateEqualizer(),
+  hydrateVolumeNormalization(),
   hydrateHiddenPlaylists(),
+  hydratePinnedPlaylists(),
   // Same reason: a fresh Rust process opens the OS default device until told otherwise.
   hydrateOutputDevice(),
   hydrateYouTubeAccountSettings(),
@@ -100,16 +108,6 @@ void Promise.all([
 ]).catch((error) => {
   logInternalError("settings hydration failed", error);
 });
-
-// Initialize Discord RPC (non-blocking)
-logInternalInfo("[Discord RPC] Initializing Discord RPC service");
-try {
-  void DiscordRpcService.init().catch((error) => {
-    logInternalError("[Discord RPC] initialization error", error);
-  });
-} catch (error) {
-  logInternalError("[Discord RPC] failed to initialize", error);
-}
 
 window.addEventListener("error", (event) => {
   logInternalError("window.error", event.error ?? event.message, {

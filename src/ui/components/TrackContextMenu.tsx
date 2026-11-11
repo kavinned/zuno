@@ -562,6 +562,7 @@ export function TrackContextMenuProvider({
   const handlersRef = useRef({ openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum, addTrackToPlaylist, showToast });
   handlersRef.current = { openTrackMenu, openPlaylistPicker, toggleTrackLike, rateTrack, onOpenAlbum, addTrackToPlaylist, showToast };
 
+  const hasOpenAlbum = Boolean(onOpenAlbum);
   const contextValue = useMemo<TrackContextMenuValue>(
     () => ({
       openTrackMenu: (event, selectedTrack, context) =>
@@ -571,7 +572,7 @@ export function TrackContextMenuProvider({
       toggleTrackLike: (selectedTrack) => handlersRef.current.toggleTrackLike(selectedTrack),
       rateTrack: (selectedTrack, rating) => handlersRef.current.rateTrack(selectedTrack, rating),
       /* Read through the ref so the identity stays stable — this context wraps every row. */
-      openAlbumForTrack: onOpenAlbum
+      openAlbumForTrack: hasOpenAlbum
         ? (selectedTrack) => handlersRef.current.onOpenAlbum?.(selectedTrack)
         : null,
       addTrackToPlaylist: (selectedTrack, playlist) =>
@@ -579,7 +580,7 @@ export function TrackContextMenuProvider({
       showToast: (message, duration) =>
         handlersRef.current.showToast(message, duration),
     }),
-    [Boolean(onOpenAlbum)],
+    [hasOpenAlbum],
   );
 
   return (

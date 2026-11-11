@@ -3,6 +3,7 @@ import type { Lyrics, LyricsQuery, Track } from "../datasource/types";
 import { logInternalDebug, logInternalError, logInternalInfo, logInternalWarn } from "../internal/logging";
 import { isPrematureEnd } from "./prematureEnd";
 import { AudioEngine, isEmbedRestrictedPlaybackError } from "./AudioEngine";
+import * as rustAudio from "./rustAudio";
 import { Queue } from "./Queue";
 import { NavigationCoalescer } from "./navigationCoalescer";
 import { recordPlay } from "./playHistory";
@@ -19,6 +20,7 @@ import { findPlayableIndex } from "./playableIndex";
 import { hasPreloadDeck } from "./preloadDeck";
 import { getAudioEngineMode, type AudioEngineMode } from "../ui/settings/audioEngine";
 import { DiscordRpcService } from "./DiscordRPC";
+import { getInvokeErrorMessage } from "../internal/appSettings";
 import {
   MAX_CROSSFADE_SEC,
   readPlaybackSettings,
@@ -106,15 +108,6 @@ const DISCORD_ASSET_URL_LIMIT = 256;
 /** How long the sleep timer spends fading out before it pauses. */
 const SLEEP_FADE_MS = 20_000;
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error !== null) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  return String(error);
-}
-
 /** A session saved before shuffle split out stored it as the order mode. */
 function wasLegacyShuffleMode(mode: unknown): boolean {
   return mode === "shuffle";
@@ -190,6 +183,8 @@ export class PlayerController {
   private handlingTrackEnd = false;
   /** The track already reloaded once after ending early, so a second failure gives up. */
   private prematureEndTrackId: string | null = null;
+  /** The track whose Rust stream ended early even after a fresh URL; it plays on the IFrame deck. */
+  private streamDiedTrackId: string | null = null;
   private pendingSeekTime: number | null = null;
   private radioQueueRequestId = 0;
   /*
@@ -220,7 +215,9 @@ export class PlayerController {
   private warmGeneration = 0;
   private crossfadeSec = 0;
   private gaplessEnabled = true;
-  private transitionTimerId: number | null = null;
+  /** Whether the Rust engine was last told to hand over by itself; see `queueGapless`. */
+  private gaplessQueued = false;
+  private stopTransitionTicker: (() => void) | null = null;
   private scrobbleTimerId: number | null = null;
   private playbackSettingsTimerId: ReturnType<typeof setTimeout> | null = null;
   private transitioning = false;
@@ -338,6 +335,9 @@ export class PlayerController {
     this.audioEngine.setMuted(settings.muted);
     if (settings.playbackRate !== undefined) {
       this.audioEngine.setPlaybackRate(settings.playbackRate);
+    }
+    if (settings.pitchSemitones !== undefined) {
+      this.audioEngine.setPitch(settings.pitchSemitones);
     }
     /*
      * Absent means "leave alone", not "reset".
@@ -726,6 +726,16 @@ export class PlayerController {
     this.emit();
   }
 
+  setPitch(semitones: number): void {
+    this.audioEngine.setPitch(semitones);
+    savePlaybackSettings(this.currentPlaybackSettings());
+    this.emit();
+  }
+
+  getPitch(): number {
+    return this.audioEngine.getPitch();
+  }
+
   getPlaybackRate(): number {
     return this.audioEngine.getPlaybackRate();
   }
@@ -952,13 +962,25 @@ export class PlayerController {
      * problem, and looping on it is worse for the listener than moving to the next one.
      */
     if (this.prematureEndTrackId === track.id) {
-      logInternalWarn("PlayerController.prematureEnd retry failed, advancing", {
+      this.prematureEndTrackId = null;
+      /*
+       * Googlevideo refusing every range past the head chunk ends every track a few seconds in,
+       * so advancing skipped the whole queue (#188). Google's own player can't be refused that way.
+       */
+      const canUseIframe = this.audioEngine.usesRustAudio()
+        && !isTrackDownloaded(track.id)
+        && this.streamDiedTrackId !== track.id;
+      logInternalWarn(`PlayerController.prematureEnd retry failed, ${canUseIframe ? "using the YouTube player" : "advancing"}`, {
         trackId: track.id,
         positionSec: Math.round(position),
         durationSec: Math.round(duration),
       });
-      this.prematureEndTrackId = null;
-      return false;
+      if (!canUseIframe) return false;
+      this.streamDiedTrackId = track.id;
+      this.discardWarmedStream(track.id);
+      await this.playTrackById(track.id);
+      if (position > 0 && this.loadedTrackId === track.id) await this.seekTo(position);
+      return true;
     }
 
     this.prematureEndTrackId = track.id;
@@ -989,7 +1011,7 @@ export class PlayerController {
         logInternalWarn("PlayerController.prematureEnd seek recovery failed", {
           trackId: track.id,
           positionSec: Math.round(position),
-          error: getErrorMessage(seekError),
+          error: getInvokeErrorMessage(seekError),
         });
       }
     }
@@ -1437,6 +1459,9 @@ export class PlayerController {
       let addonSubstitution: StreamData["addonSubstitution"] = undefined;
       let addonStats: StreamData["addonStats"] = undefined;
       try {
+        if (canFallBackToIframe && this.streamDiedTrackId === track.id) {
+          throw new Error("Its stream ended early twice.");
+        }
         const audioData = useNativeAudio
           ? warmed ?? await this.dataSource.getStreamData?.(track)
           : undefined;
@@ -1493,7 +1518,7 @@ export class PlayerController {
           addonStats = nativeAudioData.addonStats;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
-            error: getErrorMessage(error),
+            error: getInvokeErrorMessage(error),
           });
           /*
            * The Rust load is what just failed, so the retry hands the element the bytes alone;
@@ -1514,7 +1539,7 @@ export class PlayerController {
           addonStats = undefined;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to the YouTube player", {
             trackId: track.id,
-            error: getErrorMessage(error),
+            error: getInvokeErrorMessage(error),
           });
           await this.audioEngine.loadIframeFallback(track.id);
         } else if (canFallBackToNative && isEmbedRestrictedPlaybackError(error)) {
@@ -1525,7 +1550,7 @@ export class PlayerController {
           addonStats = nativeAudioData.addonStats;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
-            error: getErrorMessage(error),
+            error: getInvokeErrorMessage(error),
           });
           await this.audioEngine.loadNativeFallback(
             track.id,
@@ -1572,7 +1597,7 @@ export class PlayerController {
       logInternalError("PlayerController.ensureTrackLoaded failed", error, {
         trackId: track.id,
       });
-      const detail = getErrorMessage(error);
+      const detail = getInvokeErrorMessage(error);
       // Addon audio never goes through the YouTube player, whatever engine is selected.
       if (
         track.source === "local"
@@ -1634,12 +1659,6 @@ export class PlayerController {
   }
 
   private setState(partial: Partial<PlayerState>) {
-    logInternalDebug("PlayerController.setState", {
-      previousStatus: this.state.status,
-      nextStatus: partial.status ?? this.state.status,
-      hasError: Boolean(partial.error),
-      trackId: partial.currentTrack?.id ?? this.state.currentTrack?.id ?? null,
-    });
     this.state = { ...this.state, ...partial };
     this.syncTransitionTicker();
     this.syncScrobbleTicker();
@@ -1848,17 +1867,21 @@ export class PlayerController {
       && this.isTabActive
       && (this.gaplessEnabled || this.crossfadeSec > 0);
 
-    if (wanted === (this.transitionTimerId !== null)) return;
+    if (wanted === (this.stopTransitionTicker !== null)) return;
 
     if (!wanted) {
-      if (this.transitionTimerId !== null) globalThis.clearInterval(this.transitionTimerId);
-      this.transitionTimerId = null;
+      this.stopTransitionTicker?.();
+      this.stopTransitionTicker = null;
       return;
     }
-    this.transitionTimerId = globalThis.setInterval(
-      () => this.onTransitionTick(),
-      TRANSITION_TICK_MS,
-    );
+    // Rust's position events keep firing while the window is hidden; a silent hidden page's
+    // timers are throttled to about once a minute, which would miss every preload and crossfade.
+    if (this.audioEngine.usesRustAudio()) {
+      this.stopTransitionTicker = rustAudio.onPosition(() => this.onTransitionTick());
+      return;
+    }
+    const intervalId = globalThis.setInterval(() => this.onTransitionTick(), TRANSITION_TICK_MS);
+    this.stopTransitionTicker = () => globalThis.clearInterval(intervalId);
   }
 
   /**
@@ -1877,6 +1900,7 @@ export class PlayerController {
     if (!(duration > 0) || !Number.isFinite(remaining) || remaining <= 0) return;
 
     const next = this.peekNextTrack();
+    this.queueGapless(next, remaining);
     if (!next || !this.usesPreloadDeck(next)) return;
 
     if (remaining <= PRELOAD_LEAD_SEC) this.audioEngine.preloadNext(next.id);
@@ -1895,6 +1919,27 @@ export class PlayerController {
     });
   }
 
+  /**
+   * Lets the Rust engine start the preloaded next track itself the instant this one runs dry;
+   * waiting for `ended` to come back through here was the pause between gapless tracks (#178).
+   *
+   * Armed only inside the premature-end tolerance, so a stream that dies early still reloads
+   * rather than handing over, and never when the end isn't simply "play the next one".
+   */
+  private queueGapless(next: Track | null, remainingSec: number): void {
+    const target = next
+      && this.crossfadeSec <= 0
+      && remainingSec <= PREMATURE_END_TOLERANCE_SEC
+      && this.playbackOrderMode !== "repeat-one"
+      && this.stopAfterTrack !== this.queue.current
+      && this.audioEngine.hasPreloaded(next.id)
+      ? next.id
+      : null;
+    if (!target && !this.gaplessQueued) return;
+    this.gaplessQueued = target !== null;
+    this.audioEngine.queueGapless(target);
+  }
+
   private appendHistory(track: Track): Track[] {
     // The timestamped log is what the History page reads; this array stays untouched because
     // skip-back and recommendation filtering both walk it.
@@ -1911,7 +1956,7 @@ export class PlayerController {
       status: this.state.status,
       trackId: this.state.currentTrack?.id,
     });
-    const detail = getErrorMessage(error);
+    const detail = getInvokeErrorMessage(error);
     const track = this.state.currentTrack;
     const offlineMiss = !isOnline() && track && !isPlayableOffline(track);
 
@@ -1931,15 +1976,13 @@ export class PlayerController {
     for (const listener of this.listeners) {
       listener();
     }
-    
-    // Update Discord RPC presence
     this.updateDiscordPresence();
   }
 
   private updateDiscordPresence() {
+    // Only the tab that owns playback speaks for it; an idle background tab must not clear it.
+    if (!this.isTabActive) return;
     const currentTrack = this.state.currentTrack;
-    logInternalDebug("updateDiscordPresence", { status: this.state.status, hasTrack: !!currentTrack });
-    
     if (!currentTrack || (this.state.status !== "playing" && this.state.status !== "paused")) {
       void DiscordRpcService.syncPresence(null, this.state.status);
       return;
@@ -2019,6 +2062,7 @@ export class PlayerController {
       volume: this.state.volume,
       muted: this.state.muted,
       playbackRate: this.audioEngine.getPlaybackRate(),
+      pitchSemitones: this.audioEngine.getPitch(),
       crossfadeSec: this.crossfadeSec,
       gaplessEnabled: this.gaplessEnabled,
     };

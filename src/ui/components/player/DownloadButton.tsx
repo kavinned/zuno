@@ -9,7 +9,7 @@ import {
   queueDownload,
   removeDownload,
   useOfflineState,
-  useTrackDownloadProgress,
+  useOfflineProgress,
 } from "../../../player/offlineStore";
 
 const RING_RADIUS = 8;
@@ -29,7 +29,7 @@ export function DownloadButton() {
   // Before the early return below: hooks cannot be called conditionally.
   const addonDownloadsAllowed = useAddonDownloadsAllowed(track);
   const offline = useOfflineState();
-  const trackProgress = useTrackDownloadProgress(track?.id);
+  const trackProgress = useOfflineProgress();
 
   // Local files are already on disk; a download control for them is a button that lies.
   if (!track || track.source === "local") return null;

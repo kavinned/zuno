@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logInternalWarn } from "../internal/logging";
 import type { RustAudioSource } from "../datasource/types";
+import { getLoudness } from "./loudness";
 
 export type { RustAudioSource };
 
@@ -29,7 +30,11 @@ type EndedEvent = { trackId: string };
 let positionSec = 0;
 let durationSec = 0;
 let positionTrackId: string | null = null;
+/** When `positionSec` last arrived from Rust; -Infinity freezes it (paused, seeked, stopped). */
+let positionAt = -Infinity;
+let rate = 1;
 let endedListener: (() => void) | null = null;
+const positionListeners = new Set<() => void>();
 let unlisten: Promise<UnlistenFn[]> | null = null;
 
 /*
@@ -48,12 +53,15 @@ function ensureListening(): Promise<UnlistenFn[]> {
         positionTrackId = event.payload.trackId;
         positionSec = event.payload.positionSec;
         durationSec = event.payload.durationSec;
+        positionAt = performance.now();
+        for (const listener of positionListeners) listener();
       }),
       listen<EndedEvent>("native-audio-ended", () => {
         // Zeroed after, not before: the listener needs the final position to tell a track that
         // finished from a stream that died.
         endedListener?.();
         positionSec = 0;
+        positionAt = -Infinity;
         positionTrackId = null;
       }),
     ]);
@@ -83,10 +91,12 @@ export async function load(
     source,
     durationSec: fallbackDurationSec,
     standby,
+    loudnessDb: getLoudness(trackId) ?? null,
   });
   if (!standby) {
     positionTrackId = trackId;
     positionSec = 0;
+    positionAt = -Infinity;
     durationSec = duration;
   }
   return duration;
@@ -97,20 +107,23 @@ export function play(): Promise<void> {
 }
 
 export function pause(): Promise<void> {
+  positionSec = getCurrentTime();
+  positionAt = -Infinity;
   return invoke("native_audio_pause");
 }
 
 export async function stop(): Promise<void> {
   positionSec = 0;
+  positionAt = -Infinity;
   durationSec = 0;
   positionTrackId = null;
   await invoke("native_audio_stop");
 }
 
 export async function seek(seconds: number): Promise<void> {
-  // Written through immediately so the progress bar does not snap back to the old position for
-  // the up-to-250 ms before Rust's next event confirms the move.
+  // Written through so the bar does not snap back before Rust's next event confirms the move.
   positionSec = Math.max(0, seconds);
+  positionAt = -Infinity;
   await invoke("native_audio_seek", { positionSec: positionSec });
 }
 
@@ -118,8 +131,10 @@ export function setVolume(volume: number, muted: boolean): Promise<void> {
   return invoke("native_audio_set_volume", { volume, muted });
 }
 
-export function setRate(rate: number): Promise<void> {
-  return invoke("native_audio_set_rate", { rate });
+/** Speed keeps pitch; `pitch` is a frequency ratio that keeps speed. */
+export function setRate(next: number, pitch = 1): Promise<void> {
+  rate = next;
+  return invoke("native_audio_set_rate", { rate: next, pitch });
 }
 
 export type OutputDevice = { id: string; name: string; isDefault: boolean };
@@ -150,6 +165,11 @@ export function dropStandby(): Promise<void> {
   return invoke("native_audio_drop_standby");
 }
 
+/** Has Rust start the standby itself when the active deck runs dry; `null` disarms. */
+export function queueNext(trackId: string | null): Promise<void> {
+  return invoke("native_audio_queue_next", { trackId });
+}
+
 /** Stops and clears the active deck only. See `Command::DropActive` on the Rust side. */
 export function dropActive(): Promise<void> {
   return invoke("native_audio_drop_active");
@@ -169,8 +189,23 @@ export function releaseMediaServer(): Promise<number> {
   return invoke<number>("media_server_release");
 }
 
+/**
+ * Extrapolated between Rust's 250 ms events so readers sampling per frame move smoothly. Capped at
+ * one tick: past that the engine has paused or stalled, and guessing further would run ahead.
+ */
 export function getCurrentTime(): number {
-  return positionSec;
+  const elapsedSec = Math.min(performance.now() - positionAt, 300) / 1000;
+  return elapsedSec > 0 ? positionSec + elapsedSec * rate : positionSec;
+}
+
+/**
+ * Called on every position event. Event delivery is not timer-driven, so unlike `setInterval` it
+ * keeps its 250 ms cadence while the window is hidden and Chromium throttles timers.
+ */
+export function onPosition(listener: () => void): () => void {
+  positionListeners.add(listener);
+  void ensureListening();
+  return () => positionListeners.delete(listener);
 }
 
 export function getDuration(): number {
@@ -186,6 +221,7 @@ export function getPositionTrackId(): string | null {
 export function adoptTransitioned(trackId: string, duration: number): void {
   positionTrackId = trackId;
   positionSec = 0;
+  positionAt = -Infinity;
   durationSec = duration;
 }
 

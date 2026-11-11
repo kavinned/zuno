@@ -1,53 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { ClientType as ClientTypeEnum, Innertube as InnertubeInstance, Types, YTNodes as YTNodesType } from "youtubei.js";
-type Innertube = InnertubeInstance;
-
-let cachedYouTubeI: typeof import("youtubei.js") | null = null;
-let pendingYouTubeI: Promise<typeof import("youtubei.js")> | null = null;
-
-export function loadYouTubeI(): Promise<typeof import("youtubei.js")> {
-  if (cachedYouTubeI) return Promise.resolve(cachedYouTubeI);
-  if (!pendingYouTubeI) {
-    pendingYouTubeI = import("youtubei.js")
-      .then((mod) => {
-        cachedYouTubeI = mod;
-        return mod;
-      })
-      .catch((err) => {
-        pendingYouTubeI = null;
-        throw err;
-      });
-  }
-  return pendingYouTubeI;
-}
-
-const YTNodes = new Proxy({} as typeof YTNodesType, {
-  get(_target, prop) {
-    if (!cachedYouTubeI) {
-      throw new Error(`YTNodes.${String(prop)} accessed before youtubei.js loaded`);
-    }
-    return (cachedYouTubeI.YTNodes as unknown as Record<string | symbol, unknown>)[prop];
-  },
-});
-
-const ClientType = new Proxy({} as typeof ClientTypeEnum, {
-  get(_target, prop) {
-    if (!cachedYouTubeI) {
-      throw new Error(`ClientType.${String(prop)} accessed before youtubei.js loaded`);
-    }
-    return (cachedYouTubeI.ClientType as unknown as Record<string | symbol, unknown>)[prop];
-  },
-});
-
-const Innertube = new Proxy({} as typeof import("youtubei.js").Innertube, {
-  get(_target, prop) {
-    if (!cachedYouTubeI) {
-      throw new Error(`Innertube.${String(prop)} accessed before youtubei.js loaded`);
-    }
-    return (cachedYouTubeI.Innertube as unknown as Record<string | symbol, unknown>)[prop];
-  },
-});
+import { Window } from "@tauri-apps/api/window";
+/*
+ * Statically imported, deliberately.
+ *
+ * 1.2.0 loaded this lazily to keep ~650 kB of InnerTube client out of the startup parse. It
+ * shipped, and sign-in failed on every updated install with "cannot access 'X' before
+ * initialization" — a temporal-dead-zone error out of the split chunk. Reverted in 1.2.1:
+ * the startup win is real but it is not worth a client nobody can sign in to, and the split
+ * needs to be reproduced and tested against a live session before it goes back.
+ */
+import { ClientType, Innertube, Platform, Types, YTNodes } from "youtubei.js";
 import { getAppSetting, removeAppSetting, setAppSetting } from "../../internal/appSettings";
 import { createSerialQueue } from "../../internal/asyncQueue";
 import { clearCache, getCachedJson, setCachedJson } from "../../internal/cache";
@@ -97,6 +59,7 @@ import {
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
 import { isTrackDownloaded } from "../../player/offlineStore";
+import { rememberLoudness } from "../../player/loudness";
 import {
   getDownloadQuality,
   getStreamingQuality,
@@ -120,13 +83,9 @@ import {
 import { parseVtt } from "./localVtt";
 import { isAddonTrackId } from "../addon/url";
 import type { AddonSubstitutionMatch } from "../addon/service";
+import { decodeFrame } from "../../internal/ipcFrame";
 
 type ClientLabel = "music" | "web" | "download";
-type NativeAudioPayload = {
-  bodyBase64: string;
-  mimeType: string;
-};
-
 type NativeAudioSourcePayload = {
   url: string;
   mimeType: string;
@@ -156,15 +115,6 @@ type MusicColumn = {
     }>;
   };
 };
-
-function decodeBase64(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
 
 type MusicItem = {
   id?: string;
@@ -399,6 +349,20 @@ interface StoredGoogleAccount {
  * `YoutubeAccountStore`, and it decides whether the UI silently does nothing, refreshes for a
  * fallback account, or shows signed-out.
  */
+const RELEASE_TYPE_LABELS = new Set(["album", "single", "ep", "song", "video", "playlist"]);
+
+/**
+ * The artist a bare subtitle names, if any. An album card on an artist's page reads
+ * "Album • 2021" because the artist is implied, and taking it whole made the year the artist (#169).
+ */
+export function artistFromSubtitle(subtitle: string | undefined): string | undefined {
+  const parts = (subtitle ?? "")
+    .split("•")
+    .map((part) => part.trim())
+    .filter((part) => part && !/^\d{4}$/.test(part) && !RELEASE_TYPE_LABELS.has(part.toLowerCase()));
+  return parts.length > 0 ? parts.join(" • ") : undefined;
+}
+
 export function removeAccountOutcome(
   previousCookie: string | null,
   newActiveCookie: string | null,
@@ -438,7 +402,8 @@ function createPlaybackNonce(): string {
 const SELECTED_ACCOUNT_STORAGE_KEY = "youtube-music:selected-account";
 // v7: artist pictures come from named header fields now — foreground, then thumbnail, then the
 // channel avatar — so anything cached under the older shape-and-crop rules has to go.
-const ARTIST_CACHE_VERSION = "v9";
+// v10: releases on an artist page carry that artist, not the release year (#169).
+const ARTIST_CACHE_VERSION = "v10";
 /**
  * How long a background artist refresh is skipped after a recent one.
  *
@@ -512,14 +477,13 @@ export class YouTubeMusicDataSource extends DataSource {
   private readonly lyricsRefreshPromises = new Map<string, Promise<Lyrics>>();
   private readonly artistSubscriptionOverrides = new Map<string, { subscribed: boolean; expiresAt: number }>();
 
-  private isEvaluatorInstalled = false;
-
   constructor(
     addons?: AddonPlaybackSource,
     private readonly streamingQuality: () => AudioQuality = getStreamingQuality,
   ) {
     super();
     this.addons = addons;
+    this.setupJavaScriptEvaluator();
   }
 
   /**
@@ -554,20 +518,15 @@ export class YouTubeMusicDataSource extends DataSource {
     };
   }
 
-  private async ensureYouTubeI(): Promise<typeof import("youtubei.js")> {
-    const module = await loadYouTubeI();
-    if (!this.isEvaluatorInstalled) {
-      module.Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
-        logInternalDebug("YouTubeMusicDataSource.javascriptEvaluator", {
-          envKeys: Object.keys(env),
-          outputLength: data.output?.length ?? 0,
-        });
+  private setupJavaScriptEvaluator() {
+    Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
+      logInternalDebug("YouTubeMusicDataSource.javascriptEvaluator", {
+        envKeys: Object.keys(env),
+        outputLength: data.output?.length ?? 0,
+      });
 
-        return new Function(data.output)();
-      };
-      this.isEvaluatorInstalled = true;
-    }
-    return module;
+      return new Function(data.output)();
+    };
   }
 
   private getSessionOptions(retrievePlayer = true) {
@@ -625,7 +584,6 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private async createMusicClient(retrievePlayer = true): Promise<Innertube> {
-    await this.ensureYouTubeI();
     const client = await Innertube.create({
       ...this.getSessionOptions(retrievePlayer),
       client_type: ClientType.MUSIC,
@@ -655,7 +613,6 @@ export class YouTubeMusicDataSource extends DataSource {
       // No player needed: this client only enumerates accounts and resolves like endpoints,
       // neither of which touches stream URLs, and retrieving it downloads the player script.
       const promise = (async () => {
-        await this.ensureYouTubeI();
         return Innertube.create({
           ...this.getSessionOptions(false),
           client_type: ClientType.WEB,
@@ -694,7 +651,6 @@ export class YouTubeMusicDataSource extends DataSource {
     if (!this.downloadClientPromise) {
       logInternalInfo("YouTubeMusicDataSource.getDownloadClient creating client");
       const promise = (async () => {
-        await this.ensureYouTubeI();
         const bootstrap = await Innertube.create({
           fetch: tauriFetch,
           retrieve_player: false,
@@ -894,7 +850,7 @@ export class YouTubeMusicDataSource extends DataSource {
         .map((run) => run.text)
         .filter(Boolean)
         .join(", ")
-      || item.subtitle?.toString()
+      || artistFromSubtitle(item.subtitle?.toString())
       || "Unknown artist";
   }
 
@@ -3286,7 +3242,9 @@ export class YouTubeMusicDataSource extends DataSource {
    * sign-in completed, and it is not worth an error.
    */
   async cancelSignIn(): Promise<void> {
-    const loginWindow = await WebviewWindow.getByLabel(YOUTUBE_LOGIN_WINDOW_LABEL);
+    // A plain Window lookup: the sign-in window holds an address bar and the page as two
+    // child webviews, so no webview carries the window's own label.
+    const loginWindow = await Window.getByLabel(YOUTUBE_LOGIN_WINDOW_LABEL);
     if (!loginWindow) return;
     try {
       await loginWindow.close();
@@ -3566,7 +3524,8 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   async getAlbumTracks(album: Album, onUpdate?: (tracks: Track[]) => void): Promise<Track[]> {
-    const cacheKey = `youtube-music:album-tracks:v4:${album.id}`;
+    // v5: tracks cached under v4 may name the release year as their artist (#169).
+    const cacheKey = `youtube-music:album-tracks:v5:${album.id}`;
     const cached = await getCachedJson<Track[]>(cacheKey);
 
     if (cached?.length) {
@@ -4016,6 +3975,12 @@ export class YouTubeMusicDataSource extends DataSource {
       subscriberCount,
     };
 
+    // A release on an artist's own page links no artist of its own: it is this artist's (#169).
+    const ownRelease = (album: Album): Album =>
+      album.artists?.some((reference) => reference.id.startsWith("UC"))
+        ? album
+        : { ...album, artist: artist.name, artists: [{ id: artistId, name: artist.name }] };
+
     const popularSongs: Track[] = [];
     const releases: Album[] = [];
     const playlists: Playlist[] = [];
@@ -4059,7 +4024,7 @@ export class YouTubeMusicDataSource extends DataSource {
                   : sectionTitle.includes("single")
                     ? "single"
                     : "album";
-              return [{ ...album, releaseType }];
+              return [{ ...ownRelease(album), releaseType }];
             }),
         );
       }
@@ -4085,7 +4050,7 @@ export class YouTubeMusicDataSource extends DataSource {
           .filter((item) => item.item_type === "album")
           .map((item) => this.toAlbum(item))
           .filter((item): item is Album => Boolean(item))
-          .map((album) => ({ ...album, releaseType: "album" as const })),
+          .map((album) => ({ ...ownRelease(album), releaseType: "album" as const })),
       );
     }
     if (playlists.length === 0) {
@@ -5978,6 +5943,10 @@ export class YouTubeMusicDataSource extends DataSource {
           streamUrl = decipheredUrl;
           streamMimeType = (format as any).mime_type ?? "audio/mp4";
           usedLabel = label;
+          rememberLoudness(
+            track.id,
+            (format as any).loudness_db ?? (info as any).player_config?.audio_config?.loudness_db,
+          );
           logInternalInfo("YouTubeMusicDataSource.getStreamData format selected", {
             trackId: track.id,
             client: label,
@@ -6533,20 +6502,13 @@ export class YouTubeMusicDataSource extends DataSource {
       if (!track.localPath) {
         throw new Error("Local track path is missing.");
       }
-      const payload = await invoke<NativeAudioPayload>("local_audio_read", {
-        path: track.localPath,
-      });
-      const audioBytes = decodeBase64(payload.bodyBase64);
-      if (audioBytes.byteLength === 0) {
+      const { meta, body } = decodeFrame<{ mimeType: string }>(
+        await invoke<ArrayBuffer>("local_audio_read", { path: track.localPath }),
+      );
+      if (body.byteLength === 0) {
         throw new Error("Local audio file returned no data.");
       }
-      return {
-        bytes: audioBytes.buffer.slice(
-          audioBytes.byteOffset,
-          audioBytes.byteOffset + audioBytes.byteLength,
-        ) as ArrayBuffer,
-        mimeType: payload.mimeType,
-      };
+      return { bytes: body.slice().buffer, mimeType: meta.mimeType };
     }
 
     if (usesRustAudioEngine()) {

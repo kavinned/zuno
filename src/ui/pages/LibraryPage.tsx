@@ -34,6 +34,7 @@ import { useTrackSelection } from "../hooks/useTrackSelection";
 import { useChunkedList } from "../hooks/useChunkedList";
 import { isLikedSongsId, likedSongsCover } from "../likedSongsArtwork";
 import { useHiddenPlaylistIds } from "../settings/hiddenPlaylists";
+import { setLibrarySort, useLibrarySort, type LibrarySort } from "../settings/sortPreferences";
 
 type LibraryTab = "songs" | "albums" | "artists" | "playlists";
 
@@ -49,7 +50,6 @@ const TABS: Array<{ value: LibraryTab; label: string }> = [
 const GRID = "grid gap-5 [grid-template-columns:repeat(auto-fill,minmax(11rem,1fr))]";
 
 /** "recent" is YouTube's own order, which is newest-first — so it sorts by doing nothing. */
-type LibrarySort = "recent" | "title" | "artist";
 
 function matches(query: string, ...fields: Array<string | undefined>): boolean {
   if (!query) return true;
@@ -135,7 +135,7 @@ export function LibraryPage({
 }) {
   const [tab, setTab] = useState<LibraryTab>("songs");
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<LibrarySort>("recent");
+  const sort = useLibrarySort();
   const { currentTrackId, isPlaying } = useNowPlaying();
   const { openTrackMenu, openPlaylistPicker } = useTrackContextMenu();
   const { openPlaylistMenu, openAlbumMenu } = usePlaylistContextMenu();
@@ -408,7 +408,7 @@ export function LibraryPage({
             <Select
               className="w-40 shrink-0"
               value={activeSort}
-              onValueChange={(value) => setSort(value as LibrarySort)}
+              onValueChange={(value) => setLibrarySort(value as LibrarySort)}
             >
               <SelectTrigger aria-label="Sort library">
                 <SelectValue />

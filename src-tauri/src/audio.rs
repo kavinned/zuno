@@ -18,6 +18,7 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,9 @@ const TICK: Duration = Duration::from_millis(250);
 /// as stepping, and the thread is otherwise idle.
 const FADE_STEP: Duration = Duration::from_millis(20);
 
+/// How often an armed gapless handover checks whether the active deck ran dry.
+const GAPLESS_POLL: Duration = Duration::from_millis(5);
+
 /// How long a decoder read waits for bytes that have not landed yet before giving up.
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 /// Poll interval while waiting on the download. Short enough to be inaudible.
@@ -51,6 +55,215 @@ const STREAM_RETRY_WINDOW: Duration = Duration::from_secs(10);
 
 /// A decoded stream ready to be handed to a deck. rodio resamples it to the device's rate.
 pub(crate) type BoxedSource = Box<dyn Source + Send>;
+
+/// Longest stretch the mixer goes without re-reading a deck's rate: ~85 ms at 48 kHz.
+const SPAN_FRAMES: usize = 4_096;
+
+/**
+ * Gives a source bounded spans, so rodio's mixer keeps re-reading its sample rate.
+ *
+ * The mixer resamples a deck through one converter that reads the rate only at a span boundary,
+ * and Opus reports none, so it was read once per deck: a deck that first played 44.1 kHz played
+ * every later 48 kHz track 9% fast and sharp (#72, #177), and `Player::set_speed`, which works by
+ * changing the reported rate, never applied (#184).
+ */
+struct Respan {
+    inner: BoxedSource,
+    left: usize,
+}
+
+impl Respan {
+    fn new(inner: BoxedSource) -> Self {
+        let left = SPAN_FRAMES * inner.channels().get() as usize;
+        Self { inner, left }
+    }
+}
+
+impl Iterator for Respan {
+    type Item = rodio::Sample;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.inner.next()?;
+        self.left = match self.left {
+            0 | 1 => SPAN_FRAMES * self.inner.channels().get() as usize,
+            left => left - 1,
+        };
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl Source for Respan {
+    fn current_span_len(&self) -> Option<usize> {
+        Some(self.inner.current_span_len().map_or(self.left, |len| len.min(self.left)))
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), rodio::source::SeekError> {
+        self.inner.try_seek(position)
+    }
+}
+
+/// Speed over pitch, as f32 bits: what `Stretch` time-stretches by so the two are independent.
+static TEMPO: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Decoded samples a deck has consumed: its position in song time, whatever the speed.
+type Clock = Arc<AtomicU64>;
+
+/// Counts what the decoder hands out. rodio's own position is wall time once speed isn't 1x.
+struct Clocked {
+    inner: BoxedSource,
+    clock: Clock,
+    samples_per_sec: f64,
+}
+
+impl Iterator for Clocked {
+    type Item = rodio::Sample;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.inner.next()?;
+        self.clock.fetch_add(1, Ordering::Relaxed);
+        Some(sample)
+    }
+}
+
+impl Source for Clocked {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+    fn try_seek(&mut self, position: Duration) -> Result<(), rodio::source::SeekError> {
+        self.inner.try_seek(position)?;
+        let samples = position.as_secs_f64() * self.samples_per_sec;
+        self.clock.store(samples as u64, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+enum Stage {
+    Direct(Clocked),
+    Stretched(Box<rodio_wsola::Wsola<Clocked>>),
+    Swapping,
+}
+
+/**
+ * Time-stretches by `TEMPO` without changing pitch, so speed and pitch are separate (#186).
+ *
+ * Pitch is the player's resampling speed; this undoes its tempo change and applies the chosen
+ * one. At 1 it steps out of the way entirely rather than running WSOLA for nothing.
+ *
+ * ponytail: WSOLA smears transients a little at large ratios. Swap in a phase-vocoder stretcher
+ * (signalsmith-stretch, which needs bindgen) if that ever matters.
+ */
+struct Stretch {
+    stage: Stage,
+    tempo: f32,
+    channels: rodio::ChannelCount,
+    sample_rate: rodio::SampleRate,
+    frame_position: usize,
+}
+
+impl Stretch {
+    fn new(inner: Clocked) -> Self {
+        let (channels, sample_rate) = (inner.channels(), inner.sample_rate());
+        Self { stage: Stage::Direct(inner), tempo: 1.0, channels, sample_rate, frame_position: 0 }
+    }
+
+    fn retarget(&mut self, tempo: f32) {
+        self.tempo = tempo;
+        self.stage = match std::mem::replace(&mut self.stage, Stage::Swapping) {
+            Stage::Stretched(stretched) if tempo == 1.0 => Stage::Direct((*stretched).into_inner()),
+            Stage::Stretched(mut stretched) => {
+                stretched.set_speed(tempo);
+                Stage::Stretched(stretched)
+            }
+            Stage::Direct(direct) if tempo != 1.0 => {
+                Stage::Stretched(Box::new(rodio_wsola::Wsola::new(direct, tempo)))
+            }
+            stage => stage,
+        };
+    }
+}
+
+impl Iterator for Stretch {
+    type Item = rodio::Sample;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        // Only between frames: swapping mid-frame would hand left samples to the right channel.
+        if self.frame_position == 0 {
+            let tempo = f32::from_bits(TEMPO.load(Ordering::Relaxed));
+            if tempo != self.tempo {
+                self.retarget(tempo);
+            }
+        }
+        let sample = match &mut self.stage {
+            Stage::Direct(direct) => direct.next(),
+            Stage::Stretched(stretched) => stretched.next(),
+            Stage::Swapping => None,
+        }?;
+        self.frame_position = (self.frame_position + 1) % self.channels.get() as usize;
+        Some(sample)
+    }
+}
+
+impl Source for Stretch {
+    fn current_span_len(&self) -> Option<usize> {
+        match &self.stage {
+            Stage::Direct(direct) => direct.current_span_len(),
+            _ => None,
+        }
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.channels
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.sample_rate
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+    /// `position` is in stretched time, the way rodio's own speed adapter passes it on.
+    fn try_seek(&mut self, position: Duration) -> Result<(), rodio::source::SeekError> {
+        match &mut self.stage {
+            Stage::Direct(direct) => direct.try_seek(position),
+            Stage::Stretched(stretched) => stretched.try_seek(position),
+            Stage::Swapping => Ok(()),
+        }
+    }
+}
+
+/// A deck's player, paused. Fresh per track: a reused one resamples at the previous track's
+/// rate until its first span ends, so 48 kHz Opus after a 44.1 kHz track played sharp (#72).
+fn paused_player(mixer: &rodio::mixer::Mixer) -> Player {
+    let player = Player::connect_new(mixer);
+    player.pause();
+    player
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,23 +325,21 @@ impl Read for BufferReader {
                 return Ok(0);
             }
             if available > self.position {
-                let end = (self.position + out.len()).min(available).min(total) - 1;
-                let bytes = {
-                    let guard = self
-                        .buffer
-                        .lock()
-                        .map_err(|_| io::Error::other("audio buffer lock poisoned"))?;
-                    guard.read(self.position, end)
-                };
+                let want = out.len().min(available.min(total) - self.position);
+                // Straight into the decoder's buffer: one copy, no intermediate Vec per read.
+                let copied = self
+                    .buffer
+                    .lock()
+                    .map_err(|_| io::Error::other("audio buffer lock poisoned"))?
+                    .read_into(self.position, &mut out[..want]);
                 /*
                  * The buffer reported this range as available but the second lock saw it empty:
                  * `clear` ran between the two. Falling through to the wait path re-checks state
                  * rather than reporting EOF, which would end the song early.
                  */
-                if !bytes.is_empty() {
-                    out[..bytes.len()].copy_from_slice(&bytes);
-                    self.position += bytes.len();
-                    return Ok(bytes.len());
+                if copied > 0 {
+                    self.position += copied;
+                    return Ok(copied);
                 }
             }
             /*
@@ -210,6 +421,8 @@ struct Deck {
     track_id: Option<String>,
     duration_sec: f64,
     health: Option<DeckHealth>,
+    clock: Clock,
+    samples_per_sec: f64,
 }
 
 impl Deck {
@@ -218,6 +431,11 @@ impl Deck {
         self.track_id = None;
         self.duration_sec = 0.0;
         self.health = None;
+        self.clock = Clock::default();
+    }
+
+    fn position_sec(&self) -> f64 {
+        self.clock.load(Ordering::Relaxed) as f64 / self.samples_per_sec.max(1.0)
     }
 
     /// False only when a probe exists and says the source is broken. No probe means healthy.
@@ -256,7 +474,11 @@ pub(crate) enum Command {
         volume: f32,
         muted: bool,
     },
-    Rate(f32),
+    /// Speed keeps pitch, and pitch keeps speed (#186). Both are ratios, 1 being unchanged.
+    Rate {
+        speed: f32,
+        pitch: f32,
+    },
     /// Reopens the stream on a different device, `None` for the OS default. Both decks are lost
     /// with the old stream — the caller reloads whatever was playing, the same way a track
     /// recovers from a dead connection elsewhere in this pipeline.
@@ -285,6 +507,8 @@ pub(crate) enum Command {
     /// heading towards, so a preload could never survive a second click arriving before the
     /// first one finished.
     DropActive,
+    /// Start the standby by itself the instant the active deck runs dry, if it holds this track.
+    QueueNext(Option<String>),
 }
 
 /// The handle held as Tauri state. Cheap to clone, trivially `Send + Sync`.
@@ -314,31 +538,38 @@ impl NativeAudio {
             .lock()
             .map_err(|_| "native audio lock poisoned".to_string())?;
 
-        if slot.is_none() {
-            let (tx, rx) = mpsc::channel();
-            let (ready_tx, ready_rx) = mpsc::channel();
-            let app = self.app.clone();
-            let commands = tx.clone();
-            let device = self
-                .pending_device
-                .lock()
-                .map_err(|_| "native audio lock poisoned".to_string())?
-                .clone();
-            std::thread::Builder::new()
-                .name("zuno-audio".into())
-                .spawn(move || run(app, rx, commands, ready_tx, device))
-                .map_err(|error| format!("audio thread failed to start: {error}"))?;
-
-            ready_rx
-                .recv()
-                .map_err(|_| "audio thread stopped before it was ready".to_string())??;
-            *slot = Some(tx);
+        // Stopping an engine that never started has nothing to do, and must not open a device.
+        if slot.is_none() && matches!(command, Command::Stop) {
+            return Ok(());
         }
+        let command = match slot.as_ref() {
+            Some(sender) => match sender.send(command) {
+                Ok(()) => return Ok(()),
+                // The thread died (a panic): start a fresh one rather than fail forever.
+                Err(mpsc::SendError(command)) => command,
+            },
+            None => command,
+        };
 
-        slot.as_ref()
-            .expect("sender was just installed")
-            .send(command)
-            .map_err(|_| "audio thread is gone".to_string())
+        let (tx, rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let app = self.app.clone();
+        let commands = tx.clone();
+        let device = self
+            .pending_device
+            .lock()
+            .map_err(|_| "native audio lock poisoned".to_string())?
+            .clone();
+        std::thread::Builder::new()
+            .name("zuno-audio".into())
+            .spawn(move || run(app, rx, commands, ready_tx, device))
+            .map_err(|error| format!("audio thread failed to start: {error}"))?;
+        ready_rx
+            .recv()
+            .map_err(|_| "audio thread stopped before it was ready".to_string())??;
+        tx.send(command).map_err(|_| "audio thread is gone".to_string())?;
+        *slot = Some(tx);
+        Ok(())
     }
 
     /**
@@ -346,28 +577,27 @@ impl NativeAudio {
      *
      * Before the thread exists this only records the preference for the next lazy start — it
      * does not claim a device handle early, the same laziness `send` documents above. Once the
-     * thread is running, `pending_device` is never looked at again, so a change from here on
-     * hot-swaps the live stream instead.
+     * thread is running, a change hot-swaps the live stream; `pending_device` is still kept
+     * current for a thread restarted after a panic.
      */
     pub(crate) fn set_output_device(&self, id: Option<String>) -> Result<(), String> {
+        // Recorded either way, so a thread started or restarted later opens the latest choice.
+        *self
+            .pending_device
+            .lock()
+            .map_err(|_| "native audio lock poisoned".to_string())? = id.clone();
         let sender = self
             .sender
             .lock()
             .map_err(|_| "native audio lock poisoned".to_string())?
             .clone();
-
-        let Some(sender) = sender else {
-            *self
-                .pending_device
-                .lock()
-                .map_err(|_| "native audio lock poisoned".to_string())? = id;
-            return Ok(());
-        };
+        let Some(sender) = sender else { return Ok(()) };
 
         let (tx, rx) = mpsc::channel();
-        sender
-            .send(Command::SetOutputDevice { id, reply: tx })
-            .map_err(|_| "audio thread is gone".to_string())?;
+        // A dead thread is fine: the next command restarts it on the device recorded above.
+        if sender.send(Command::SetOutputDevice { id, reply: tx }).is_err() {
+            return Ok(());
+        }
         rx.recv().map_err(|_| "audio thread dropped the request".to_string())?
     }
 }
@@ -635,10 +865,13 @@ fn open_output(
     generation: u64,
 ) -> Result<(MixerDeviceSink, [Deck; 2]), String> {
     let stream = open_device_sink(id, stream_failure_reporter(commands, generation))?;
-    let deck = || {
-        let sink = Player::connect_new(stream.mixer());
-        sink.pause();
-        Deck { sink, track_id: None, duration_sec: 0.0, health: None }
+    let deck = || Deck {
+        sink: paused_player(stream.mixer()),
+        track_id: None,
+        duration_sec: 0.0,
+        health: None,
+        clock: Clock::default(),
+        samples_per_sec: 1.0,
     };
     let decks = [deck(), deck()];
     Ok((stream, decks))
@@ -692,9 +925,11 @@ fn run(
         active: 0,
         volume: 1.0,
         muted: false,
-        rate: 1.0,
+        speed: 1.0,
+        pitch: 1.0,
         playing: false,
         fade: None,
+        queued: None,
     };
 
     if ready.send(Ok(())).is_err() {
@@ -706,7 +941,13 @@ fn run(
         let now = Instant::now();
         let until_tick = next_tick.saturating_duration_since(now);
         // A fade needs finer steps than the position tick, so whichever is due first wins.
-        let timeout = if engine.fade.is_some() { until_tick.min(FADE_STEP) } else { until_tick };
+        let timeout = if engine.fade.is_some() {
+            until_tick.min(FADE_STEP)
+        } else if engine.queued.is_some() {
+            until_tick.min(GAPLESS_POLL)
+        } else {
+            until_tick
+        };
 
         match rx.recv_timeout(timeout) {
             Ok(command) => {
@@ -720,6 +961,7 @@ fn run(
         }
 
         engine.advance_fade();
+        engine.advance_gapless();
         if Instant::now() >= next_tick {
             engine.tick();
             next_tick = Instant::now() + TICK;
@@ -747,9 +989,12 @@ struct Engine {
     active: usize,
     volume: f32,
     muted: bool,
-    rate: f32,
+    speed: f32,
+    pitch: f32,
     playing: bool,
     fade: Option<Fade>,
+    /// See `Command::QueueNext`.
+    queued: Option<String>,
 }
 
 impl Engine {
@@ -794,6 +1039,7 @@ impl Engine {
                     // A fade against a deck that is being reloaded would ramp a track that is
                     // no longer there.
                     self.cancel_fade();
+                    self.queued = None;
                 }
                 let duration = decoded_duration_sec
                     .filter(|value| *value > 0.0)
@@ -806,17 +1052,25 @@ impl Engine {
                  * swap starts it in the same tick it becomes active.
                  */
                 let volume = if standby { 0.0 } else { self.output_volume() };
-                let rate = self.rate;
+                let Some(stream) = self.stream.as_ref() else {
+                    let _ = reply.send(Err("audio output is not open".to_string()));
+                    return false;
+                };
 
                 let deck = &mut self.decks[index];
-                deck.sink.stop();
-                if let Some(stream) = &self.stream {
-                    deck.sink = Player::connect_new(stream.mixer());
-                }
-                deck.sink.append(source);
-                deck.sink.pause();
+                // Replacing the player drops the old one, which stops it.
+                deck.sink = paused_player(stream.mixer());
                 deck.sink.set_volume(volume);
-                deck.sink.set_speed(rate);
+                deck.sink.set_speed(self.pitch);
+                deck.clock = Clock::default();
+                deck.samples_per_sec =
+                    source.sample_rate().get() as f64 * source.channels().get() as f64;
+                let clocked = Clocked {
+                    inner: source,
+                    clock: deck.clock.clone(),
+                    samples_per_sec: deck.samples_per_sec,
+                };
+                deck.sink.append(Respan::new(Box::new(Stretch::new(clocked))));
                 deck.track_id = Some(track_id);
                 deck.duration_sec = duration;
                 deck.health = health;
@@ -859,13 +1113,15 @@ impl Engine {
             }
             Command::Stop => {
                 self.cancel_fade();
+                self.queued = None;
                 for deck in &mut self.decks {
                     deck.clear();
                 }
                 self.playing = false;
             }
             Command::Seek(seconds) => {
-                let target = Duration::from_secs_f64(seconds.max(0.0));
+                // The speed and stretch adapters each scale it back up on the way down.
+                let target = Duration::from_secs_f64(seconds.max(0.0) / self.speed as f64);
                 if let Err(error) = self.decks[self.active].sink.try_seek(target) {
                     eprintln!(
                         "[internal][tauri][warn] native audio seek failed: {error} ({error:?}) target_sec={seconds:.3}"
@@ -880,13 +1136,24 @@ impl Engine {
                     self.decks[self.active].sink.set_volume(self.output_volume());
                 }
             }
-            Command::Rate(rate) => {
-                self.rate = rate.clamp(0.25, 4.0);
+            Command::Rate { speed, pitch } => {
+                self.speed = speed.clamp(0.25, 4.0);
+                self.pitch = pitch.clamp(0.5, 2.0);
+                // Pitch resamples, which changes tempo too; the stretch makes up the rest.
+                let tempo = (self.speed / self.pitch).clamp(0.25, 8.0);
+                TEMPO.store(tempo.to_bits(), Ordering::Relaxed);
                 for deck in &self.decks {
-                    deck.sink.set_speed(self.rate);
+                    deck.sink.set_speed(self.pitch);
                 }
             }
             Command::Transition { track_id, fade_ms, reply } => {
+                self.queued = None;
+                // `advance_gapless` already made the swap this asks for.
+                let active = self.decks[self.active].track_id.as_deref();
+                if self.playing && active == Some(track_id.as_str()) {
+                    let _ = reply.send(true);
+                    return false;
+                }
                 let standby = self.standby();
                 if self.decks[standby].track_id.as_deref() != Some(track_id.as_str()) {
                     let _ = reply.send(false);
@@ -914,7 +1181,7 @@ impl Engine {
                 self.decks[standby]
                     .sink
                     .set_volume(if fade_ms > 0 { 0.0 } else { target });
-                self.decks[standby].sink.set_speed(self.rate);
+                self.decks[standby].sink.set_speed(self.pitch);
                 self.decks[standby].sink.play();
 
                 let outgoing = self.active;
@@ -960,9 +1227,11 @@ impl Engine {
                 // A fade reads the active deck's volume every tick; cancel it first, or the
                 // next tick would ramp a deck that was just cleared.
                 self.cancel_fade();
+                self.queued = None;
                 self.decks[self.active].clear();
                 self.playing = false;
             }
+            Command::QueueNext(track_id) => self.queued = track_id,
             Command::SetOutputDevice { id, reply } => {
                 let _ = reply.send(self.reopen(id));
             }
@@ -1000,6 +1269,7 @@ impl Engine {
         // A fade on the old decks is stale — dropped rather than settled through `cancel_fade`,
         // which would write a volume to a deck this is about to discard anyway.
         self.fade = None;
+        self.queued = None;
         self.stream = Some(stream);
         self.decks = decks;
         self.device_id = id;
@@ -1046,6 +1316,36 @@ impl Engine {
         }
     }
 
+    /**
+     * Starts the queued standby the moment the active deck runs dry.
+     *
+     * Waiting for the tick and then the frontend's `transition` left a pause of up to half a
+     * second between gapless tracks (#178). This polls every `GAPLESS_POLL` while armed instead.
+     *
+     * ponytail: up to ~10 ms of silence (the poll, then the player's 5 ms control update). Append
+     * the next source to the active player's queue if sample-accurate gapless ever matters.
+     */
+    fn advance_gapless(&mut self) {
+        let standby = self.standby();
+        if self.queued.is_none()
+            || !self.playing
+            || self.fade.is_some()
+            || !self.decks[self.active].sink.empty()
+        {
+            return;
+        }
+        let queued = self.queued.take();
+        if self.decks[standby].track_id != queued || !self.decks[standby].is_healthy() {
+            return;
+        }
+        let Some(track_id) = self.decks[self.active].track_id.clone() else { return };
+        self.decks[self.active].clear();
+        self.decks[standby].sink.set_volume(self.output_volume());
+        self.decks[standby].sink.play();
+        self.active = standby;
+        let _ = self.app.emit("native-audio-ended", EndedEvent { track_id });
+    }
+
     fn tick(&mut self) {
         let index = self.active;
         let Some(track_id) = self.decks[index].track_id.clone() else { return };
@@ -1069,7 +1369,7 @@ impl Engine {
             "native-audio-position",
             PositionEvent {
                 track_id,
-                position_sec: self.decks[index].sink.get_pos().as_secs_f64(),
+                position_sec: self.decks[index].position_sec(),
                 duration_sec: self.decks[index].duration_sec,
             },
         );
@@ -1098,5 +1398,81 @@ mod tests {
         }
         assert!(matches!(rx.try_recv(), Ok(Command::StreamFailed(7))));
         assert!(rx.try_recv().is_err(), "cpal repeats POLLERR in a loop; only the first counts");
+    }
+
+    /// A constant 48 kHz mono tone that reports no span length, as Opus does.
+    struct Unspanned(usize);
+
+    impl Iterator for Unspanned {
+        type Item = rodio::Sample;
+        fn next(&mut self) -> Option<Self::Item> {
+            self.0 = self.0.checked_sub(1)?;
+            Some(0.5)
+        }
+    }
+
+    impl Source for Unspanned {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+        fn channels(&self) -> rodio::ChannelCount {
+            rodio::ChannelCount::new(1).unwrap()
+        }
+        fn sample_rate(&self) -> rodio::SampleRate {
+            rodio::SampleRate::new(48_000).unwrap()
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    /// Samples a 48 kHz mixer produces for 2 s of input with speed set to 2x after it started.
+    fn mixed_at_double_speed(respan: bool) -> usize {
+        let (mixer, out) = rodio::mixer::mixer(
+            rodio::ChannelCount::new(1).unwrap(),
+            rodio::SampleRate::new(48_000).unwrap(),
+        );
+        let source: BoxedSource = Box::new(Unspanned(96_000));
+        let source = if respan { Box::new(Respan::new(source)) } else { source };
+        // How `Player` applies `set_speed`: a 1x adapter, retuned from the mixing thread.
+        mixer.add(source.speed(1.0).periodic_access(Duration::from_millis(5), |speed| {
+            speed.set_factor(2.0)
+        }));
+        out.count()
+    }
+
+    // One test, since `TEMPO` is process-wide and tests run in parallel.
+    #[test]
+    fn stretch_changes_length_not_pitch_and_steps_aside_at_one() {
+        let stretched = |tempo: f32| {
+            let clock = Clock::default();
+            let clocked = Clocked {
+                inner: Box::new(Unspanned(48_000)),
+                clock: clock.clone(),
+                samples_per_sec: 48_000.0,
+            };
+            TEMPO.store(tempo.to_bits(), Ordering::Relaxed);
+            let stretch = Stretch::new(clocked);
+            let rate = stretch.sample_rate().get();
+            let produced = stretch.count();
+            (produced, rate, clock.load(Ordering::Relaxed))
+        };
+
+        let (produced, rate, clock) = stretched(2.0);
+        assert!((20_000..28_000).contains(&produced), "1 s at 2x lasts ~0.5 s: {produced}");
+        assert_eq!(rate, 48_000, "the rate, and so the pitch, is untouched");
+        assert_eq!(clock, 48_000, "the clock counts song time, not output");
+
+        let (produced, _, _) = stretched(1.0);
+        TEMPO.store(1.0f32.to_bits(), Ordering::Relaxed);
+        assert_eq!(produced, 48_000, "at 1x every sample passes straight through");
+    }
+
+    #[test]
+    fn a_speed_change_reaches_a_source_with_no_spans() {
+        assert_eq!(mixed_at_double_speed(false), 96_000, "the unfixed path ignores the speed");
+        let mixed = mixed_at_double_speed(true);
+        // 1x until the first span ends, 2x after.
+        assert!((48_000..52_000).contains(&mixed), "expected about 1 s of output, got {mixed}");
     }
 }

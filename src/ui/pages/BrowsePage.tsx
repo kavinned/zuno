@@ -18,7 +18,6 @@ import {
   removeAllDownloads,
   useOfflineProgress,
   useOfflineState,
-  useTrackDownloadProgress,
 } from "../../player/offlineStore";
 import { BrowseShelves } from "../components/BrowseShelves";
 import { TrackRow } from "../components/TrackRow";
@@ -52,8 +51,9 @@ function DownloadProgressSummary() {
   return <>{progress !== null ? ` · downloading ${progress}%` : " · downloading"}</>;
 }
 
-function InFlightTrailing({ trackId, isActive }: { trackId: string; isActive: boolean }) {
-  const progress = useTrackDownloadProgress(trackId);
+function InFlightTrailing({ isActive }: { trackId: string; isActive: boolean }) {
+  /* One transfer at a time, so the active row is the transfer the global progress describes. */
+  const progress = useOfflineProgress();
   return (
     <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
       {isActive
@@ -146,7 +146,7 @@ export function BrowsePage({
     return () => {
       cancelled = true;
     };
-  }, [isDownloads, libraryController, target]);
+  }, [isDownloads, libraryController, surface, target]);
 
   const playShelfTrack = (shelfTracks: Track[], track: Track) => {
     void playerController.playTrackById(track.id, shelfTracks);

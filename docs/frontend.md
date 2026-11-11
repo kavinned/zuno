@@ -32,7 +32,7 @@ controllers — all state arrives over Tauri events from the main window.
 
 ## 2. `App.tsx` — the root
 
-2150 lines, the only component with meaningful state. It owns:
+The only component with meaningful state. It owns:
 
 | Concern | State / refs |
 |---|---|
@@ -44,7 +44,7 @@ controllers — all state arrives over Tauri events from the main window.
 | Loading screen | `loadingScreenState`, min 1000 ms / max 4000 ms, 80 ms fade |
 | Mini player | positioning, focus-driven create/destroy, suppression windows during drags |
 | Recovery | sleep detection (15 s timer, 60 s drift threshold) → reload; connection recovery on window focus |
-| Session persistence | an effect on `[tabs, activeTabId, nextTabId, playerSession]`, `beforeunload`, and a `SESSION_HEARTBEAT_MS` (5 s) heartbeat |
+| Session persistence | an effect on `[tabs, activeTabId, nextTabId]`, a 1 s-debounced `tabManager.subscribe` (outside render), `beforeunload`, and a `SESSION_HEARTBEAT_MS` (5 s) heartbeat |
 
 **On that heartbeat:** the effect and `beforeunload` are the real persistence path; the timer only
 keeps `positionSec` fresh for a restore after a crash or a kill. It ran every second, rebuilding
@@ -150,7 +150,7 @@ Tailwind classes inline; there are no `*.module.css` files.
 | `GoogleSignInButton.tsx` | The single sign-in button used everywhere. Previously three different-looking buttons for the same consequential action. |
 | `AuthOverlay.tsx` | Progress for sign-in and account-switch, driven by `LibraryState.authProgress`. The stages are listed per flow rather than filtered from one array — switching channel has no browser step, and rendering it as "skipped" would claim something that never happened. |
 | `NotificationsPanel.tsx` | Artist release feed with an unseen badge, refreshed on a slow interval — new releases arrive on the order of days. |
-| `DownloadsPanel.tsx` | Recent downloads (4) with progress and byte totals; the full list is the `downloads` browse surface. |
+| `DownloadsPanel.tsx` | Toolbar progress ring and count; the panel shows storage, the active download, up next, failures (retry or dismiss) and the 4 most recent saves. The full list is the `downloads` browse surface. |
 | `TagEditor.tsx` | Local-file tag editing via `local_audio_read_tags` / `local_audio_write_tags`. |
 | `ArtistLinks.tsx` | Renders `Track.artists[]` as individually clickable links through `ArtistNavigationProvider`; falls back to the plain artist string. |
 | `TrackArtwork.tsx` | Artwork with loading/fallback states, backed by `internal/artworkCache.ts` so remounts don't rewalk the candidate URLs. |
@@ -252,7 +252,8 @@ download caps set independently — the reason to cap one is not the reason to c
 |---|---|---|
 | `usePlayerState()` | `player/playerStore.ts` | Effective player's `PlayerState` (status, current track, history, order mode, shuffle, volume, muted) |
 | `usePlayerSelector(select)` | same | Narrowed slice compared with `shallowEqual` — the preferred hook; the whole state object re-renders far more than any one component needs |
-| `usePlayerSession()` | same | Full session snapshot including the queue |
+| `usePlayerSessionSelector(select)` | same | Cached slice of the session (queue window etc.) |
+| `useLibrarySelector(select)` | same | Cached slice of library state; per-row reads go through this |
 | `useLibraryState()` | same | `LibraryController` state (status, snapshot, auth prompt, auth progress, pending likes, `sessionConfirmedAt`) |
 | `usePlayerUIState()` | `ui/stores/playerUIStore.ts` | Transient UI: `isSeeking`, `isDraggingVolume`, `showAlbumArt`, `isLyricsOpen`, `isQueueOpen` |
 | `useAmbientArtwork()` | `ui/stores/ambientArtworkStore.ts` | Artwork the current page wants the chrome tinted by. The page publishes, `Layout` subscribes — the wash starts above the search bar but the page that knows the artwork renders below it, inside a clipping scroll container |
@@ -288,10 +289,10 @@ scan (the reference dumps in there are full of class names the app never uses).
   surfaces carried one — the content pane, title bar, sidebar, player bar, search field, right
   panel and queue header — and removing them changed nothing visually. Blur belongs only on a
   translucent fill (`bg-card/60`, `bg-background/70`).
-- **Blur radius sizes the compositor's intermediate textures**, so the two always-on filters are
-  kept modest: the ambient wash at `blur-[32px]` (its source is a 120px image stretched to full
-  width — a ~20x upscale is already most of the softness) and StarField's blobs at `blur-2xl`
-  (they are `rounded-full` gradients fading to transparent, so the fill does the work).
+- **Artwork washes are blurred once, not every frame.** `BlurredArtwork` paints the cover into a
+  64px canvas and CSS stretches it; a live `filter: blur()` on a window-sized layer is re-applied by
+  the compositor on every frame it is drawn. StarField's blooms are radial gradients, and motion
+  variants animate opacity and transform only, never `filter`.
 - The UI is **borderless** — surfaces are separated by background contrast, not outlines.
   `--color-border` / `--color-input` exist only because beUI internals reference them.
 - Non-colour `:root` constants: `--ambient-bloom` (strength of the accent wash behind the window,
