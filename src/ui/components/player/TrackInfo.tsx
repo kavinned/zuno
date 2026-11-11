@@ -211,6 +211,7 @@ export function TrackInfo() {
   const addonSource = addonSourceId === undefined
     ? undefined
     : addonSources.find((source) => source.id === addonSourceId)?.label;
+  const isFlacTrack = addonFormat?.toLowerCase() === "flac";
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -318,8 +319,10 @@ export function TrackInfo() {
               className="w-56 p-3"
               trigger={(
                 <AddonBadge
+                  key={`${currentTrack.id}-${addonFormat ?? ""}`}
                   format={addonFormat}
                   lossless={substitution?.lossless}
+                  active={isFlacTrack}
                 />
               )}
             >

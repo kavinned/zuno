@@ -329,9 +329,11 @@ const LOSSLESS_FORMAT = /^(?:flac|alac|wav|aiff|pcm)$/i;
 export function AddonBadge({
   format,
   lossless = false,
+  active = false,
 }: {
   format?: string;
   lossless?: boolean;
+  active?: boolean;
 }) {
   const filled = lossless || LOSSLESS_FORMAT.test(format ?? "");
   return (
@@ -341,6 +343,7 @@ export function AddonBadge({
         filled
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border text-muted-foreground",
+        active && "flac-badge-active",
       )}
     >
       {format || "Addon"}
