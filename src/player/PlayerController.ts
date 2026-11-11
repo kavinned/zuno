@@ -17,7 +17,7 @@ import { getOfflineTrack, isPlayableOffline, isTrackDownloaded } from "./offline
 import { isOnline } from "../internal/connectivity";
 import { findPlayableIndex } from "./playableIndex";
 import { hasPreloadDeck } from "./preloadDeck";
-import { getAudioEngineMode } from "../ui/settings/audioEngine";
+import { getAudioEngineMode, type AudioEngineMode } from "../ui/settings/audioEngine";
 import { DiscordRpcService } from "./DiscordRPC";
 import {
   MAX_CROSSFADE_SEC,
@@ -212,7 +212,8 @@ export class PlayerController {
   private shuffleEnabled = false;
   private isPlaylistMode = false;
   /** Audio resolved ahead of time for the next track, claimed by `ensureTrackLoaded`. */
-  private warmedStream: { trackId: string; data: StreamData } | null = null;
+  /* Tagged with the engine that resolved it: a stream's bytes are built for one engine path. */
+  private warmedStream: { trackId: string; engine: AudioEngineMode; data: StreamData } | null = null;
   /** The next track being prepared; a click on it joins this instead of tearing it down. */
   private warming: WarmSlot | null = null;
   /** Bumped to invalidate a warm whose click stopped waiting for it. */
@@ -1494,12 +1495,16 @@ export class PlayerController {
             trackId: track.id,
             error: getErrorMessage(error),
           });
+          /*
+           * The Rust load is what just failed, so the retry hands the element the bytes alone;
+           * passing `rustSource` here would route a downloaded addon straight back into it.
+           */
           await this.audioEngine.loadNativeFallback(
             track.id,
             nativeAudioData.bytes,
             nativeAudioData.mimeType,
             nativeAudioData.sourceUrl,
-            nativeAudioData.rustSource,
+            undefined,
             track.durationSec,
           );
         } else if (canFallBackToIframe) {
@@ -1724,15 +1729,20 @@ export class PlayerController {
     ) {
       return;
     }
+    /* A stream resolved for the previous engine mode is unusable; let this warm replace it. */
+    if (this.warmedStream !== null && this.warmedStream.engine !== getAudioEngineMode()) {
+      this.warmedStream = null;
+    }
     if (this.warmedStream?.trackId === next.id) return;
 
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
     const generation = ++this.warmGeneration;
+    const engine = getAudioEngineMode();
     const promise = getStreamData(next)
       .then(async (data) => {
         /* The click that wanted this warm stopped waiting, so its result must not land. */
         if (generation !== this.warmGeneration) return;
-        this.warmedStream = { trackId: next.id, data };
+        this.warmedStream = { trackId: next.id, engine, data };
         logInternalDebug("PlayerController.warmNextTrack audio ready", { trackId: next.id });
         /*
          * On the Rust engine the warmed stream goes one step further and is decoded onto the
@@ -1765,6 +1775,11 @@ export class PlayerController {
    */
   private claimWarmedStream(trackId: string): StreamData | undefined {
     if (this.warmedStream?.trackId !== trackId) return undefined;
+    if (this.warmedStream.engine !== getAudioEngineMode()) {
+      /* Resolved under the mode the user has since left; loading it would use the wrong path. */
+      this.warmedStream = null;
+      return undefined;
+    }
     const { data } = this.warmedStream;
     this.warmedStream = null;
     return data;
