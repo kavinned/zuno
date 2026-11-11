@@ -58,6 +58,13 @@ interface CacheEntry {
   value: unknown;
 }
 
+/** One deduped request and the callers still waiting on it. */
+interface InFlight {
+  promise: Promise<unknown>;
+  controller: AbortController;
+  waiters: number;
+}
+
 const MANIFEST_KEY = "manifest";
 const MANIFEST_TTL_MS = 10 * 60_000;
 const SEARCH_TTL_MS = 10 * 60_000;
@@ -90,7 +97,7 @@ export class AddonClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly cache = new Map<string, CacheEntry>();
-  private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly inFlight = new Map<string, InFlight>();
   private rateLimitedUntil = 0;
 
   constructor(source: AddonSourceConfig, options: AddonClientOptions = {}) {
@@ -116,13 +123,13 @@ export class AddonClient {
       const cached = this.readCache<AddonManifest | null>(MANIFEST_KEY);
       if (cached !== undefined) return cached;
     }
-    return this.dedupe(MANIFEST_KEY, async () => {
+    return this.dedupe(MANIFEST_KEY, async (sharedSignal) => {
       const url = `${this.source.baseUrl.replace(/\/+$/, "")}/manifest.json`;
-      const response = await this.send(url, options.signal);
+      const response = await this.send(url, sharedSignal);
       const manifest = this.interpretManifest(response);
       this.writeCache(MANIFEST_KEY, manifest, MANIFEST_TTL_MS);
       return manifest;
-    });
+    }, options.signal);
   }
 
   async search(
@@ -137,17 +144,17 @@ export class AddonClient {
       const cached = this.readCache<AddonSearchRow[]>(key);
       if (cached !== undefined) return cached;
     }
-    return this.dedupe(key, async () => {
+    return this.dedupe(key, async (sharedSignal) => {
       const url = buildAddonSearchUrl(
         this.source.baseUrl,
         query,
         addonQualityParams(this.cachedManifest(), quality),
       );
-      const response = await this.send(url, options.signal);
+      const response = await this.send(url, sharedSignal);
       const rows = this.interpretSearch(response);
       this.writeCache(key, rows, SEARCH_TTL_MS);
       return rows;
-    });
+    }, options.signal);
   }
 
   async resolveStream(
@@ -162,13 +169,13 @@ export class AddonClient {
       const cached = this.readCache<AddonStreamAnswer>(key);
       if (cached !== undefined) return cached;
     }
-    return this.dedupe(key, async () => {
+    return this.dedupe(key, async (sharedSignal) => {
       const url = buildAddonStreamUrl(
         this.source.baseUrl,
         trackId,
         addonQualityParams(this.cachedManifest(), quality),
       );
-      const response = await this.send(url, options.signal);
+      const response = await this.send(url, sharedSignal);
       const answer = this.interpretStream(response);
       const expiresAtMs = normalizeExpiresAtMs(answer.expiresAt);
       const ttl = expiresAtMs === undefined
@@ -176,7 +183,7 @@ export class AddonClient {
         : Math.min(STREAM_TTL_MS, expiresAtMs - this.now() - EXPIRY_MARGIN_MS);
       this.writeCache(key, answer, ttl);
       return answer;
-    });
+    }, options.signal);
   }
 
   private interpretManifest(response: AddonRequestResult): AddonManifest | null {
@@ -301,14 +308,60 @@ export class AddonClient {
     return this.readCache<AddonManifest | null>(MANIFEST_KEY) ?? null;
   }
 
-  private dedupe<T>(key: string, work: () => Promise<T>): Promise<T> {
-    const existing = this.inFlight.get(key);
-    if (existing !== undefined) return existing as Promise<T>;
-    const promise = work().finally(() => {
-      this.inFlight.delete(key);
+  /**
+   * Shares one request between callers with its own controller, so no caller's budget can
+   * cancel work another is still waiting on. The request aborts only when its last waiter
+   * aborts; a caller that gives up early sees "cancelled" while the others keep their search.
+   */
+  private dedupe<T>(
+    key: string,
+    work: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    let entry = this.inFlight.get(key) as InFlight | undefined;
+    if (entry === undefined) {
+      const controller = new AbortController();
+      const promise = work(controller.signal).finally(() => {
+        if (this.inFlight.get(key) === entry) this.inFlight.delete(key);
+      });
+      entry = { promise, controller, waiters: 0 };
+      this.inFlight.set(key, entry as InFlight);
+    }
+    const shared = entry as InFlight & { promise: Promise<T> };
+    if (signal === undefined) {
+      /* No signal means this caller cannot abandon the request; it never gives up its turn. */
+      shared.waiters += 1;
+      return shared.promise;
+    }
+    return new Promise<T>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new AddonRequestError("cancelled"));
+        return;
+      }
+      shared.waiters += 1;
+      const leave = () => {
+        shared.waiters -= 1;
+        if (shared.waiters === 0) shared.controller.abort();
+      };
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        leave();
+        reject(new AddonRequestError("cancelled"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      shared.promise.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          leave();
+          resolve(value as T);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          leave();
+          reject(error);
+        },
+      );
     });
-    this.inFlight.set(key, promise);
-    return promise;
   }
 }
 

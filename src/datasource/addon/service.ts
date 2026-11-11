@@ -278,14 +278,14 @@ export class AddonService {
         return this.recordFailure(id, error, "unreachable");
       }
       this.trackCooldown(id, "ok");
-      await registry.recordProbe(id, "ok", null);
+      await registry.recordProbe(id, "ok", null, source.baseUrl);
       return "ok";
     }
 
     const health: AddonHealth =
       manifest.checkValidLossless && !this.deps.outputCapable() ? "gated" : "ok";
     this.trackCooldown(id, health);
-    await registry.recordProbe(id, health, manifest);
+    await registry.recordProbe(id, health, manifest, source.baseUrl);
     return health;
   }
 
@@ -709,7 +709,7 @@ export class AddonService {
       allowDownloads: current.allowDownloads,
       checkValidLossless: current.checkValidLossless,
     };
-    await this.deps.registry.recordProbe(current.id, health, manifest);
+    await this.deps.registry.recordProbe(current.id, health, manifest, source.baseUrl);
   }
 
   private isEligible(source: AddonSourceConfig): boolean {

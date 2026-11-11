@@ -161,9 +161,12 @@ export class AddonRegistry {
     id: string,
     health: AddonHealth,
     manifest: AddonManifest | null = null,
+    expectedBaseUrl?: string,
   ): Promise<void> {
     return this.mutate(async () => {
       const current = this.require(id);
+      /* A probe resolved against the old URL must not stamp its answer on a just-edited one. */
+      if (expectedBaseUrl !== undefined && current.baseUrl !== expectedBaseUrl) return;
       const next: AddonSourceConfig = { ...current, lastHealth: health };
       if (manifest !== null) {
         next.manifestName = manifest.name;

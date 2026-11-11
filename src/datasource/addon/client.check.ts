@@ -382,4 +382,32 @@ for (const body of [JSON.stringify({ error: "unavailable" }), "{}", JSON.stringi
   equal(transport.urls.length, 1, "abort after a sleep stops before the next request");
 }
 
+{
+  /*
+   * Two callers share one search. The first caller's budget expiring must not lose the search
+   * for the second; the request itself runs to completion and caches.
+   */
+  let release: (() => void) | undefined;
+  const transport = fakeTransport(
+    () => new Promise<AddonRequestResult>((resolve) => {
+      release = () => resolve({ status: 200, body: tracksBody });
+    }),
+  );
+  const client = new AddonClient(source, {
+    request: transport.request,
+    sleep: noSleep,
+    now: () => 0,
+  });
+  const controller = new AbortController();
+  const first = client.search("gehra", "high", { signal: controller.signal });
+  const second = client.search("gehra", "high");
+  controller.abort();
+  await expectKind(first, "cancelled", "the aborted caller observes cancellation");
+  await Promise.resolve();
+  release?.();
+  const rows = await second;
+  equal(rows.length, 1, "the second caller still gets the shared search");
+  equal(transport.urls.length, 1, "the shared search was requested once");
+}
+
 console.log("addon/client: ok");

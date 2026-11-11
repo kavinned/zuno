@@ -174,6 +174,12 @@ equal(updated?.lastHealth, undefined, "update clears health");
 const updatedWrite = JSON.stringify(lastWrite(storage));
 check(!updatedWrite.includes("newsecret"), "the new secret is never persisted");
 
+/* A probe that resolved against the old URL must not stamp the just-edited source. */
+await registry.recordProbe(source.id, "unreachable", null, "https://host.example/oldsecret");
+equal(registry.get(source.id)?.lastHealth, undefined, "a stale probe from the old URL is ignored");
+await registry.recordProbe(source.id, "ok", null, "https://host.example/newsecret");
+equal(registry.get(source.id)?.lastHealth, "ok", "a probe from the current URL still writes");
+
 const restrictive: AddonManifest = {
   id: "torbox",
   resources: ["search"],
