@@ -6,6 +6,12 @@ import { AudioEngine, isEmbedRestrictedPlaybackError } from "./AudioEngine";
 import { Queue } from "./Queue";
 import { NavigationCoalescer } from "./navigationCoalescer";
 import { recordPlay } from "./playHistory";
+import {
+  isWarmingTrack,
+  joinWarm,
+  shouldTearDownBeforePlay,
+  type WarmSlot,
+} from "./warmHandoff";
 import { computeQueueWindow } from "./queueWindow";
 import { getOfflineTrack, isPlayableOffline, isTrackDownloaded } from "./offlineStore";
 import { isOnline } from "../internal/connectivity";
@@ -207,7 +213,8 @@ export class PlayerController {
   private isPlaylistMode = false;
   /** Audio resolved ahead of time for the next track, claimed by `ensureTrackLoaded`. */
   private warmedStream: { trackId: string; data: StreamData } | null = null;
-  private warmingStream = false;
+  /** The next track being prepared; a click on it joins this instead of tearing it down. */
+  private warming: WarmSlot | null = null;
   private crossfadeSec = 0;
   private gaplessEnabled = true;
   private transitionTimerId: number | null = null;
@@ -386,11 +393,15 @@ export class PlayerController {
     const requestId = ++this.playTrackRequestId;
     logInternalInfo("PlayerController.playTrackById start", { videoId });
     /*
-     * Stopping tears down the standby deck along with everything else, which would throw away
-     * the very thing that makes the next track start instantly. When the track being asked for
-     * is the one already cued, the transition in ensureTrackLoaded takes over the handover.
+     * Stopping tears down the standby deck along with everything else. Skip that when the
+     * track is already cued, or is the one the warm slot is still preparing — the click joins
+     * that warm in ensureTrackLoaded instead of paying for a fresh load.
      */
-    if (!this.audioEngine.hasPreloaded(videoId)) {
+    if (shouldTearDownBeforePlay(
+      this.audioEngine.hasPreloaded(videoId),
+      this.warming?.trackId ?? null,
+      videoId,
+    )) {
       this.audioEngine.stop();
       this.audioEngine.silenceCompetingPlayback();
     }
@@ -1258,6 +1269,19 @@ export class PlayerController {
       throw new Error("Not available offline.");
     }
 
+    /*
+     * A click that lands while the next track is still warming joins it. The warm promise is
+     * the whole resolve-plus-preload chain, so awaiting it lets the preloaded branch below
+     * hand over without a second fetch. A timeout falls through to the ordinary load, which is
+     * exactly what happened before this existed.
+     */
+    const warming = this.warming;
+    if (isWarmingTrack(warming, track.id)) {
+      await joinWarm(warming, track.id);
+      /* A second skip during the wait means this track is no longer wanted. */
+      if (this.state.currentTrack?.id !== track.id) return;
+    }
+
     try {
       const startedAt = performance.now();
       /*
@@ -1677,7 +1701,7 @@ export class PlayerController {
 
     if (!this.audioEngine.usesNativeAudio()) return;
     if (!this.dataSource.getStreamData) return;
-    if (this.warmingStream) return;
+    if (this.warming !== null) return;
     /*
      * A track already on disk has no network wait to hide, which is all warming ever did on the
      * `<audio>` engine — so it stays excluded there.
@@ -1696,8 +1720,7 @@ export class PlayerController {
     if (this.warmedStream?.trackId === next.id) return;
 
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
-    this.warmingStream = true;
-    void getStreamData(next)
+    const promise = getStreamData(next)
       .then(async (data) => {
         this.warmedStream = { trackId: next.id, data };
         logInternalDebug("PlayerController.warmNextTrack audio ready", { trackId: next.id });
@@ -1717,8 +1740,9 @@ export class PlayerController {
         });
       })
       .finally(() => {
-        this.warmingStream = false;
+        if (this.warming?.promise === promise) this.warming = null;
       });
+    this.warming = { trackId: next.id, promise };
   }
 
   /**
