@@ -20,12 +20,19 @@ import {
 import { usePlayerUIState } from "../../stores/playerUIStore";
 import { TrackArtwork } from "../TrackArtwork";
 import { ArtistLinks } from "../ArtistLinks";
+import { AddonBadge } from "../TrackRow";
+import { formatAddonAudioInfo } from "./audioInfoText";
 import { useTrackContextMenu } from "../TrackContextMenu";
 import { FloatingPanel } from "../FloatingPanel";
 import {
   setDefaultPlaylist,
   useDefaultPlaylist,
 } from "../../settings/defaultPlaylist";
+import { useAddonSources } from "../../settings/addonSources";
+import {
+  useHideAddToPlaylistButton,
+  useHideLikeButton,
+} from "../../settings/playerControls";
 import {
   getLocalPlaylistItems,
   isLocalPlaylist,
@@ -67,6 +74,7 @@ export function TrackInfo() {
     isIn: boolean;
   } | null>(null);
   const [isDefaultMenuOpen, setIsDefaultMenuOpen] = useState(false);
+  const [isAddonInfoOpen, setIsAddonInfoOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddingToPlaylist, setIsAddingToPlaylist] = useState(false);
   const [checkingTrackId, setCheckingTrackId] = useState<string | null>(null);
@@ -144,7 +152,8 @@ export function TrackInfo() {
 
   useEffect(() => {
     if (!currentTrack || !targetPlaylist) return;
-    if (isLocalPlaylist(targetPlaylist) || currentTrack.source === "local") return;
+    // Only YouTube tracks have a YouTube playlist membership to ask about.
+    if (isLocalPlaylist(targetPlaylist) || currentTrack.source !== "youtube") return;
     if (isTrackKnownInPlaylist(currentTrack, targetPlaylist)) return;
 
     let active = true;
@@ -180,6 +189,23 @@ export function TrackInfo() {
     };
   }, [currentTrack?.id, targetPlaylist?.id]);
 
+  /*
+   * The stream panel is portalled, so collapsing the row does not unmount it. Close it with
+   * the track and with the details row, or the previous track's stream floats over the next.
+   */
+  const hasAudioDetails = currentTrack !== null
+    && (currentTrack.source === "addon" || currentTrack.addonSubstitution !== undefined);
+  useEffect(() => {
+    setIsAddonInfoOpen(false);
+  }, [currentTrack?.id]);
+  useEffect(() => {
+    if (!hasAudioDetails) setIsAddonInfoOpen(false);
+  }, [hasAudioDetails]);
+
+  const addonSources = useAddonSources().sources;
+  const hideLikeButton = useHideLikeButton();
+  const hideAddToPlaylistButton = useHideAddToPlaylistButton();
+
   if (!currentTrack) {
     return null;
   }
@@ -187,7 +213,24 @@ export function TrackInfo() {
   const isLikeStatusLoading =
     (libraryState.status === "restoring" || libraryState.status === "loading")
     && !libraryState.library;
-  const canLikeCurrentTrack = currentTrack.source !== "local";
+  const canLikeCurrentTrack = currentTrack.source === "youtube";
+  const isAddonTrack = currentTrack.source === "addon";
+  const substitution = currentTrack.addonSubstitution;
+  const showAudioDetails = isAddonTrack || substitution !== undefined;
+  const audioInfo = isAddonTrack
+    ? {
+        sampleRateHz: currentTrack.addon?.sampleRateHz,
+        bitDepth: currentTrack.addon?.bitDepth,
+        kbps: currentTrack.addon?.kbps,
+      }
+    : substitution;
+  const audioInfoText = formatAddonAudioInfo(audioInfo ?? {});
+  const addonFormat = isAddonTrack ? currentTrack.addon?.format : substitution?.format;
+  const addonSourceId = isAddonTrack ? currentTrack.addon?.sourceId : substitution?.sourceId;
+  const addonSource = addonSourceId === undefined
+    ? undefined
+    : addonSources.find((source) => source.id === addonSourceId)?.label;
+  const isFlacTrack = addonFormat?.toLowerCase() === "flac";
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -222,6 +265,8 @@ export function TrackInfo() {
         playlistId: target.id,
         isIn: true,
       });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Unable to add this song.", 4000);
     } finally {
       setIsAddingToPlaylist(false);
     }
@@ -254,7 +299,7 @@ export function TrackInfo() {
           iconSize={22}
         />
       )}
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-col">
         <div ref={titleViewportRef} className="relative min-w-0 overflow-hidden">
           {/* Hidden measuring copy — Marquee duplicates its children, so width
               must be read from a single stable node. */}
@@ -276,13 +321,84 @@ export function TrackInfo() {
             </Marquee>
           )}
         </div>
-        <div className="truncate text-xs text-muted-foreground">
-          <ArtistLinks artists={currentTrack.artists} fallback={currentTrack.artist} />
+        <div className="mb-0.5 truncate text-xs text-muted-foreground">
+          {/* Addon artists have no artist id, so their names must not trigger a YouTube search. */}
+          <ArtistLinks
+            artists={currentTrack.artists}
+            fallback={currentTrack.artist}
+            interactive={currentTrack.source !== "addon"}
+          />
+        </div>
+        {/* Kept mounted so the row can grow and shrink instead of snapping in under the title. */}
+        <div
+          aria-hidden={!showAudioDetails}
+          className={cn(
+            "grid transition-[grid-template-rows] duration-[400ms] ease-out",
+            showAudioDetails ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+          )}
+        >
+          {/* Padding widens the clip past the badge's 8px glow; the negative margin
+              cancels it so the row's layout does not grow, collapsed or open. */}
+          <div className="-m-2 overflow-hidden p-2">
+            <div
+              className={cn(
+                "flex origin-bottom-left items-center gap-1.5 pt-0.5 transition-[transform,opacity] duration-[400ms] ease-out",
+                showAudioDetails
+                  ? "translate-y-0 scale-100 opacity-100"
+                  : "translate-y-2 scale-95 opacity-0",
+              )}
+            >
+              <FloatingPanel
+                open={isAddonInfoOpen}
+                onOpenChange={setIsAddonInfoOpen}
+                openOnHover
+                focusPanelOnOpen
+                side="top"
+                triggerClassName="inline-flex"
+                className="w-56 p-3"
+                trigger={(
+                  <button
+                    type="button"
+                    aria-label={
+                      addonSource === undefined
+                        ? "Addon stream details"
+                        : `Addon stream details from ${addonSource}`
+                    }
+                    aria-expanded={isAddonInfoOpen}
+                    onClick={() => setIsAddonInfoOpen((open) => !open)}
+                    className="inline-flex items-center rounded-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <AddonBadge
+                      key={`${currentTrack.id}-${addonFormat ?? ""}`}
+                      format={addonFormat}
+                      lossless={substitution?.lossless}
+                      active={isFlacTrack}
+                    />
+                  </button>
+                )}
+              >
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Addon stream
+                  </span>
+                  {addonSource !== undefined && (
+                    <span className="text-xs text-muted-foreground">{addonSource}</span>
+                  )}
+                  <span className="text-xs text-foreground">
+                    {audioInfoText !== "" ? audioInfoText : "Format details unavailable"}
+                  </span>
+                  {addonFormat !== undefined && (
+                    <span className="text-[10px] uppercase text-muted-foreground">{addonFormat}</span>
+                  )}
+                </div>
+              </FloatingPanel>
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {canLikeCurrentTrack && (
+        {!hideLikeButton && canLikeCurrentTrack && (
           <button
             type="button"
             className={cn(
@@ -329,6 +445,8 @@ export function TrackInfo() {
           </button>
         )}
 
+        {/* Addon tracks belong to no playlist; local and YouTube tracks keep their own paths. */}
+        {!hideAddToPlaylistButton && currentTrack.source !== "addon" && (
         <FloatingPanel
           open={isDefaultMenuOpen}
           onOpenChange={setIsDefaultMenuOpen}
@@ -442,6 +560,7 @@ export function TrackInfo() {
             </div>
           </div>
         </FloatingPanel>
+        )}
       </div>
     </div>
   );

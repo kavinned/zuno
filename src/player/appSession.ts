@@ -1,5 +1,6 @@
 import type { Tab } from "../ui/types/tab";
 import type { TabManagerSession } from "./TabManager";
+import { serializePersisted } from "../internal/persistedJson";
 
 const STORAGE_KEY = "yt-music-dock.app-session.v1";
 const POSITION_KEY = "zuno.playback-position.v1";
@@ -97,7 +98,7 @@ let lastWrittenSession: string | null = null;
 
 export function saveAppSession(session: AppSession): void {
   try {
-    const payload = JSON.stringify(session);
+    const payload = serializePersisted(session);
     if (payload === lastWrittenSession) return;
     localStorage.setItem(STORAGE_KEY, payload);
     lastWrittenSession = payload;

@@ -75,4 +75,35 @@ clearAppSession();
 equal(loadAppSession(), null, "session cleared");
 equal(loadPlaybackPosition(), null, "position cleared");
 
+// 4. An addon row's media URL is in-memory only, never in the persisted session
+saveAppSession({
+  ...mockSession,
+  player: {
+    ...mockSession.player,
+    players: {
+      "tab-1": {
+        ...mockSession.player.players["tab-1"],
+        currentTrack: {
+          id: "addon.550e8400-e29b-41d4-a716-446655440000.ABCDEFGHIJKLMNOPQRSTUV",
+          title: "Song 1",
+          artist: "Artist 1",
+          artists: [],
+          source: "addon" as const,
+          addon: {
+            sourceId: "550e8400-e29b-41d4-a716-446655440000",
+            trackId: "song-1",
+            title: "Song 1",
+            artist: "Artist 1",
+            streamUrl: "https://cdn.example/audio.flac?token=secret",
+          },
+        },
+      },
+    },
+  },
+});
+const sessionRaw = store.get("yt-music-dock.app-session.v1") ?? "";
+check(sessionRaw !== "", "the session was written");
+check(!sessionRaw.includes("streamUrl"), "the persisted session omits streamUrl");
+check(!sessionRaw.includes("token=secret"), "the persisted session omits the media URL");
+
 console.log("appSession.check passed");

@@ -694,3 +694,59 @@ html[data-fx-off~="marquee"] .animate-marquee-vertical {
   --skin-lcd-glare: oklch(1 0 0 / 35%);
   --skin-danger: oklch(0.5 0.2 27);
 }
+
+/*
+ * The FLAC badge's "this one is lossless" cue: a single sheen pass when a FLAC track starts,
+ * then a slow glow while it stays loaded. Both end where they start, so the reduced-motion
+ * rule that collapses every animation to one frame leaves it resting on its dim state.
+ */
+.flac-badge-active {
+  position: relative;
+  overflow: hidden;
+  /* Enter on every mount (each new track); the glow starts once the entrance settles. */
+  animation:
+    flac-badge-enter 320ms ease-out both,
+    flac-badge-glow 2.6s 320ms ease-in-out infinite;
+}
+
+.flac-badge-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    oklch(1 0 0 / 70%) 50%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: flac-badge-sheen 900ms ease-out 1;
+}
+
+@keyframes flac-badge-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes flac-badge-sheen {
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes flac-badge-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 8px 0 color-mix(in oklab, var(--color-primary) 55%, transparent);
+  }
+}

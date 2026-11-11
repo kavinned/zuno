@@ -1,5 +1,7 @@
 import type {
   AccountOption,
+  AddonStreamStats,
+  AddonSubstitutionInfo,
   GoogleAccountOption,
   ArtistNotificationLevel,
   BrowsePage,
@@ -49,6 +51,15 @@ export type StreamData = {
    * resolving one of the other two would do the work this avoids.
    */
   rustSource?: RustAudioSource;
+  /** Real stream metadata, when the source could learn it (addon FLAC streams). */
+  audioInfo?: { sampleRateHz?: number; bitDepth?: number; kbps?: number };
+  /**
+   * Format details that arrive after the stream was accepted, so the substitution budget is
+   * not spent probing. The player merges them into the displayed track when they resolve.
+   */
+  addonStats?: Promise<AddonStreamStats | undefined>;
+  /** The addon rendition served in place of the original source, when one was substituted. */
+  addonSubstitution?: AddonSubstitutionInfo;
 };
 
 export abstract class DataSource {
@@ -62,6 +73,8 @@ export abstract class DataSource {
   searchTracks?(query: string, onUpdate?: (tracks: Track[]) => void): Promise<Track[]>;
   getSearchSuggestions?(query: string, onUpdate?: (suggestions: string[]) => void): Promise<string[]>;
   getStreamData?(track: Track): Promise<StreamData>;
+  /** Resolves the native-engine path explicitly, bypassing the Rust branch. */
+  getNativeStreamData?(track: Track): Promise<StreamData>;
   /**
    * Pre-pays whatever first-play latency can be paid before there is a play — e.g. warming a
    * lazily-created client or a slow one-time attestation. Fire-and-forget: called when the

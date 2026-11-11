@@ -717,6 +717,8 @@ export class LibraryController {
 
   /** Empty when the source cannot answer — the picker falls back to what it remembers. */
   async getPlaylistIdsContainingTrack(track: Track): Promise<string[]> {
+    // A composite addon id is not a YouTube video id; asking YouTube about it is meaningless.
+    if (track.source !== "youtube") return [];
     if (!this.dataSource.getPlaylistIdsContainingTrack) return [];
     if (this.state.status === "signed-out") return [];
     return this.dataSource.getPlaylistIdsContainingTrack(track);
@@ -726,6 +728,9 @@ export class LibraryController {
     track: Track,
     playlist: Playlist,
   ): Promise<"added" | "already-present"> {
+    if (track.source === "addon") {
+      throw new Error("Songs from addon sources can't be added to playlists.");
+    }
     if (track.source === "local") {
       // A local playlist is a list of file paths, not of tracks, so a local song joins it by
       // path. (Local songs in a *YouTube* playlist can't be sent to YouTube at all, so those

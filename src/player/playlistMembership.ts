@@ -108,13 +108,15 @@ export function isTrackKnownInPlaylist(track: Track, playlist: Playlist): boolea
   if (track.source === "local") {
     return getLocalTracksForPlaylist(playlist).some((item) => item.localPath === track.localPath);
   }
+  // Only YouTube tracks can be members of a YouTube playlist; nothing to recall for the rest.
+  if (track.source !== "youtube") return false;
   const targetBare = barePlaylistId(playlist.id);
   return read()[track.id]?.some((id) => barePlaylistId(id) === targetBare) ?? false;
 }
 
 /** Records a confirmed add. Local membership is derived from storage, so it is skipped. */
 export function rememberTrackInPlaylist(track: Track, playlist: Playlist): void {
-  if (track.source === "local" || isLocalPlaylist(playlist)) return;
+  if (track.source !== "youtube" || isLocalPlaylist(playlist)) return;
 
   const current = read();
   const existing = current[track.id] ?? [];
@@ -128,7 +130,7 @@ export function rememberTrackInPlaylist(track: Track, playlist: Playlist): void 
 
 /** Records multiple confirmed playlist memberships at once for a track. */
 export function rememberTrackInPlaylists(track: Track, playlistIds: string[]): void {
-  if (track.source === "local" || playlistIds.length === 0) return;
+  if (track.source !== "youtube" || playlistIds.length === 0) return;
 
   const current = read();
   const existing = current[track.id] ?? [];

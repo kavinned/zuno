@@ -6,12 +6,18 @@ import { AudioEngine, isEmbedRestrictedPlaybackError } from "./AudioEngine";
 import { Queue } from "./Queue";
 import { NavigationCoalescer } from "./navigationCoalescer";
 import { recordPlay } from "./playHistory";
+import {
+  isWarmingTrack,
+  joinWarm,
+  shouldTearDownBeforePlay,
+  type WarmSlot,
+} from "./warmHandoff";
 import { computeQueueWindow } from "./queueWindow";
 import { getOfflineTrack, isPlayableOffline, isTrackDownloaded } from "./offlineStore";
 import { isOnline } from "../internal/connectivity";
 import { findPlayableIndex } from "./playableIndex";
 import { hasPreloadDeck } from "./preloadDeck";
-import { getAudioEngineMode } from "../ui/settings/audioEngine";
+import { getAudioEngineMode, type AudioEngineMode } from "../ui/settings/audioEngine";
 import { DiscordRpcService } from "./DiscordRPC";
 import {
   MAX_CROSSFADE_SEC,
@@ -206,8 +212,12 @@ export class PlayerController {
   private shuffleEnabled = false;
   private isPlaylistMode = false;
   /** Audio resolved ahead of time for the next track, claimed by `ensureTrackLoaded`. */
-  private warmedStream: { trackId: string; data: StreamData } | null = null;
-  private warmingStream = false;
+  /* Tagged with the engine that resolved it: a stream's bytes are built for one engine path. */
+  private warmedStream: { trackId: string; engine: AudioEngineMode; data: StreamData } | null = null;
+  /** The next track being prepared; a click on it joins this instead of tearing it down. */
+  private warming: WarmSlot | null = null;
+  /** Bumped to invalidate a warm whose click stopped waiting for it. */
+  private warmGeneration = 0;
   private crossfadeSec = 0;
   private gaplessEnabled = true;
   private transitionTimerId: number | null = null;
@@ -386,11 +396,15 @@ export class PlayerController {
     const requestId = ++this.playTrackRequestId;
     logInternalInfo("PlayerController.playTrackById start", { videoId });
     /*
-     * Stopping tears down the standby deck along with everything else, which would throw away
-     * the very thing that makes the next track start instantly. When the track being asked for
-     * is the one already cued, the transition in ensureTrackLoaded takes over the handover.
+     * Stopping tears down the standby deck along with everything else. Skip that when the
+     * track is already cued, or is the one the warm slot is still preparing — the click joins
+     * that warm in ensureTrackLoaded instead of paying for a fresh load.
      */
-    if (!this.audioEngine.hasPreloaded(videoId)) {
+    if (shouldTearDownBeforePlay(
+      this.audioEngine.hasPreloaded(videoId),
+      this.warming?.trackId ?? null,
+      videoId,
+    )) {
       this.audioEngine.stop();
       this.audioEngine.silenceCompetingPlayback();
     }
@@ -455,7 +469,22 @@ export class PlayerController {
           .then((fetched) => {
             // A skip during the refresh makes this answer belong to a track nobody is on.
             if (requestId !== this.playTrackRequestId) return;
-            this.setState({ currentTrack: mergeWithQueued(fetched) });
+            let next = mergeWithQueued(fetched);
+            const current = this.state.currentTrack;
+            /*
+             * The load may already have earned what this refresh knows nothing about: a
+             * substituted stream and the audio info merged onto a real addon track. Keep both,
+             * but only for the same track — a stale answer must not leak across ids.
+             */
+            if (current?.id === videoId) {
+              if (next.addonSubstitution === undefined && current.addonSubstitution !== undefined) {
+                next = { ...next, addonSubstitution: current.addonSubstitution };
+              }
+              if (next.addon !== undefined && current.addon !== undefined) {
+                next = { ...next, addon: { ...next.addon, ...current.addon } };
+              }
+            }
+            this.setState({ currentTrack: next });
           })
           .catch((error) => {
             // Playback is already under way on the known copy; this is a missing refresh, not
@@ -1243,6 +1272,24 @@ export class PlayerController {
       throw new Error("Not available offline.");
     }
 
+    /*
+     * A click that lands while the next track is still warming joins it. The warm promise is
+     * the whole resolve-plus-preload chain, so awaiting it lets the preloaded branch below
+     * hand over without a second fetch. A timeout falls through to the ordinary load, which is
+     * exactly what happened before this existed.
+     */
+    const warming = this.warming;
+    if (isWarmingTrack(warming, track.id)) {
+      const joined = await joinWarm(warming, track.id);
+      /* A second skip during the wait means this track is no longer wanted. */
+      if (this.state.currentTrack?.id !== track.id) return;
+      /*
+       * A timed-out join must not leave the warm free to resolve and preload in parallel with
+       * the load below; that is the duplicate search/download and the late overwrite.
+       */
+      if (!joined) this.abandonWarm(track.id);
+    }
+
     try {
       const startedAt = performance.now();
       /*
@@ -1259,7 +1306,13 @@ export class PlayerController {
           this.loadedTrackId = track.id;
           this.pendingSeekTime = null;
           // The deck already holds these bytes, so the slot is stale rather than useful.
-          this.claimWarmedStream(track.id);
+          const warmed = this.claimWarmedStream(track.id);
+          this.applyAddonPlaybackInfo(
+            track.id,
+            warmed?.audioInfo,
+            warmed?.addonSubstitution,
+            warmed?.addonStats,
+          );
           logInternalInfo("PlayerController.ensureTrackLoaded preloaded deck", {
             trackId: track.id,
             crossfadeSec: this.crossfadeSec,
@@ -1335,7 +1388,14 @@ export class PlayerController {
        * never reached at all.
        */
       const isDownloaded = isTrackDownloaded(track.id);
-      const useNativeAudio = this.audioEngine.usesNativeAudio() || isDownloaded;
+      /*
+       * An addon track on an engine that is not Rust has to take the native element directly.
+       * Its id is composite (`sourceId.…`) and means nothing to YouTube, so the IFrame player
+       * would be asked to cue a video that does not exist; `getStreamData` resolves the addon
+       * stream (or its offline copy) and the native element plays that.
+       */
+      const addonNativeOnly = track.source === "addon" && !this.audioEngine.usesRustAudio();
+      const useNativeAudio = this.audioEngine.usesNativeAudio() || isDownloaded || addonNativeOnly;
       /*
        * A warmed track skips the whole resolve-and-download round trip, which is the entire
        * wait a listener feels when they press next. Claimed rather than read: it is one slot,
@@ -1356,7 +1416,8 @@ export class PlayerController {
        * and falling back for a *download* would stream the online copy of a track the user
        * saved on purpose.
        */
-      const canFallBackToIframe = this.audioEngine.usesRustAudio() && !isDownloaded;
+      const canFallBackToIframe = this.audioEngine.usesRustAudio() && !isDownloaded
+        && track.source !== "addon";
       /*
        * The mirror case: the embed is refused not because Google won't resolve the track but
        * because its owner disallows embedded playback at all (error 101/150) — a restriction
@@ -1365,7 +1426,16 @@ export class PlayerController {
        * gets one try at native audio before giving up.
        */
       const canFallBackToNative = !useNativeAudio && !isDownloaded;
+      /*
+       * Rust's decoder has a narrower codec set than the native element, and an addon is free
+       * to offer something only one of them handles. A failed Rust load therefore gets one
+       * retry on the native path — never the IFrame, which cannot play a composite id.
+       */
+      const canRetryAddonOnNative = track.source === "addon" && this.audioEngine.usesRustAudio();
 
+      let audioInfo: StreamData["audioInfo"] = undefined;
+      let addonSubstitution: StreamData["addonSubstitution"] = undefined;
+      let addonStats: StreamData["addonStats"] = undefined;
       try {
         const audioData = useNativeAudio
           ? warmed ?? await this.dataSource.getStreamData?.(track)
@@ -1373,8 +1443,20 @@ export class PlayerController {
         if (useNativeAudio && !audioData) {
           throw new Error("The data source does not support native audio playback.");
         }
+        audioInfo = audioData?.audioInfo;
+        addonSubstitution = audioData?.addonSubstitution;
+        addonStats = audioData?.addonStats;
 
-        if (isDownloaded && audioData) {
+        if (addonNativeOnly && audioData) {
+          await this.audioEngine.loadNativeFallback(
+            track.id,
+            audioData.bytes,
+            audioData.mimeType,
+            audioData.sourceUrl,
+            undefined,
+            track.durationSec,
+          );
+        } else if (isDownloaded && audioData) {
           await this.audioEngine.loadNativeFallback(
             track.id,
             audioData.bytes,
@@ -1394,7 +1476,42 @@ export class PlayerController {
           );
         }
       } catch (error) {
-        if (canFallBackToIframe) {
+        if (canRetryAddonOnNative) {
+          /*
+           * A downloaded copy is served first, so the retry does not re-resolve a stream that
+           * is meant to be reachable offline; `getNativeStreamData` alone knows nothing about
+           * the offline store.
+           */
+          const offlineData = isDownloaded
+            ? await this.dataSource.getStreamData?.(track)
+            : undefined;
+          const nativeAudioData = offlineData
+            ?? await this.dataSource.getNativeStreamData?.(track);
+          if (!nativeAudioData) throw error;
+          audioInfo = nativeAudioData.audioInfo;
+          addonSubstitution = nativeAudioData.addonSubstitution;
+          addonStats = nativeAudioData.addonStats;
+          logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
+            trackId: track.id,
+            error: getErrorMessage(error),
+          });
+          /*
+           * The Rust load is what just failed, so the retry hands the element the bytes alone;
+           * passing `rustSource` here would route a downloaded addon straight back into it.
+           */
+          await this.audioEngine.loadNativeFallback(
+            track.id,
+            nativeAudioData.bytes,
+            nativeAudioData.mimeType,
+            nativeAudioData.sourceUrl,
+            undefined,
+            track.durationSec,
+          );
+        } else if (canFallBackToIframe) {
+          /* The addon load failed; the IFrame plays YouTube, so no verified addon format remains. */
+          audioInfo = undefined;
+          addonSubstitution = undefined;
+          addonStats = undefined;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to the YouTube player", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1403,6 +1520,9 @@ export class PlayerController {
         } else if (canFallBackToNative && isEmbedRestrictedPlaybackError(error)) {
           const nativeAudioData = await this.dataSource.getStreamData?.(track);
           if (!nativeAudioData) throw error;
+          audioInfo = nativeAudioData.audioInfo;
+          addonSubstitution = nativeAudioData.addonSubstitution;
+          addonStats = nativeAudioData.addonStats;
           logInternalWarn("PlayerController.ensureTrackLoaded falling back to native audio", {
             trackId: track.id,
             error: getErrorMessage(error),
@@ -1421,6 +1541,7 @@ export class PlayerController {
       }
 
       this.loadedTrackId = track.id;
+      this.applyAddonPlaybackInfo(track.id, audioInfo, addonSubstitution, addonStats);
       if (this.pendingSeekTime !== null) {
         this.audioEngine.seekTo(this.pendingSeekTime);
         this.pendingSeekTime = null;
@@ -1452,10 +1573,59 @@ export class PlayerController {
         trackId: track.id,
       });
       const detail = getErrorMessage(error);
-      if (track.source === "local" || this.audioEngine.usesNativeAudio()) {
+      // Addon audio never goes through the YouTube player, whatever engine is selected.
+      if (
+        track.source === "local"
+        || track.source === "addon"
+        || this.audioEngine.usesNativeAudio()
+      ) {
         throw new Error(`Unable to load audio data for playback. ${detail}`);
       }
       throw new Error(`Unable to load YouTube player for playback. ${detail}`);
+    }
+  }
+
+  /** Carries real stream metadata onto the displayed track once its audio has loaded. */
+  private applyAddonPlaybackInfo(
+    trackId: string,
+    audioInfo: StreamData["audioInfo"],
+    addonSubstitution: StreamData["addonSubstitution"],
+    addonStats?: StreamData["addonStats"],
+  ): void {
+    const current = this.state.currentTrack;
+    if (current?.id !== trackId) return;
+
+    let next = current;
+    if (addonSubstitution !== undefined) {
+      next = { ...next, addonSubstitution };
+    } else if (next.addonSubstitution !== undefined) {
+      /* A restored or previously substituted track must lose a badge the new load did not earn. */
+      next = { ...next, addonSubstitution: undefined };
+    }
+    if (audioInfo !== undefined && current.addon !== undefined) {
+      const known = Object.fromEntries(
+        Object.entries(audioInfo).filter(([, value]) => value !== undefined),
+      );
+      if (Object.keys(known).length > 0) {
+        next = { ...next, addon: { ...current.addon, ...known } };
+      }
+    }
+    if (next !== current) this.setState({ currentTrack: next });
+
+    if (addonStats !== undefined) {
+      void addonStats
+        .then((stats) => {
+          if (stats === undefined) return;
+          const shown = this.state.currentTrack;
+          if (shown?.id !== trackId || shown.addonSubstitution === undefined) return;
+          this.applyAddonPlaybackInfo(trackId, undefined, {
+            ...shown.addonSubstitution,
+            ...stats,
+          });
+        })
+        .catch(() => {
+          /* Format details are optional; the stream is already playing. */
+        });
     }
   }
 
@@ -1543,7 +1713,7 @@ export class PlayerController {
 
     if (!this.audioEngine.usesNativeAudio()) return;
     if (!this.dataSource.getStreamData) return;
-    if (this.warmingStream) return;
+    if (this.warming !== null) return;
     /*
      * A track already on disk has no network wait to hide, which is all warming ever did on the
      * `<audio>` engine — so it stays excluded there.
@@ -1559,13 +1729,20 @@ export class PlayerController {
     ) {
       return;
     }
+    /* A stream resolved for the previous engine mode is unusable; let this warm replace it. */
+    if (this.warmedStream !== null && this.warmedStream.engine !== getAudioEngineMode()) {
+      this.warmedStream = null;
+    }
     if (this.warmedStream?.trackId === next.id) return;
 
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
-    this.warmingStream = true;
-    void getStreamData(next)
+    const generation = ++this.warmGeneration;
+    const engine = getAudioEngineMode();
+    const promise = getStreamData(next)
       .then(async (data) => {
-        this.warmedStream = { trackId: next.id, data };
+        /* The click that wanted this warm stopped waiting, so its result must not land. */
+        if (generation !== this.warmGeneration) return;
+        this.warmedStream = { trackId: next.id, engine, data };
         logInternalDebug("PlayerController.warmNextTrack audio ready", { trackId: next.id });
         /*
          * On the Rust engine the warmed stream goes one step further and is decoded onto the
@@ -1583,8 +1760,9 @@ export class PlayerController {
         });
       })
       .finally(() => {
-        this.warmingStream = false;
+        if (this.warming?.promise === promise) this.warming = null;
       });
+    this.warming = { trackId: next.id, promise };
   }
 
   /**
@@ -1597,13 +1775,30 @@ export class PlayerController {
    */
   private claimWarmedStream(trackId: string): StreamData | undefined {
     if (this.warmedStream?.trackId !== trackId) return undefined;
+    if (this.warmedStream.engine !== getAudioEngineMode()) {
+      /* Resolved under the mode the user has since left; loading it would use the wrong path. */
+      this.warmedStream = null;
+      return undefined;
+    }
     const { data } = this.warmedStream;
     this.warmedStream = null;
     return data;
   }
 
+  /** Drops a warm the load has stopped waiting for, so its late result cannot land on the deck. */
+  private abandonWarm(trackId: string): void {
+    if (this.warming?.trackId !== trackId) return;
+    this.warming = null;
+    this.warmGeneration += 1;
+  }
+
   /** Whether a track can be handed to a standby deck rather than loaded on the spot. */
   private usesPreloadDeck(track: Track): boolean {
+    /*
+     * The IFrame deck resolves whatever id it is handed, and an addon's composite id is not a
+     * YouTube video id. Only Rust can take an addon stream it was given directly.
+     */
+    if (track.source === "addon") return this.audioEngine.usesRustAudio();
     return hasPreloadDeck(getAudioEngineMode(), {
       isLocal: track.source === "local",
       isDownloaded: isTrackDownloaded(track.id),

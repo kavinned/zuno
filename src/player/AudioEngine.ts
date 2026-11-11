@@ -1056,6 +1056,10 @@ export class AudioEngine {
   ): Promise<void> {
     const requestId = ++this.loadRequestId;
     this.iframeFallbackActive = false;
+    /* A failed Rust load leaves this on the outgoing track, and play() prefers it over the
+       element loaded here. The native path owns playback from this point. */
+    this.rustTrackId = null;
+    this.rustDurationSec = 0;
     // This is the path that publishes bodies to the media server, so a later switch back to the
     // Rust engine has something to release again.
     mediaServerReleased = false;

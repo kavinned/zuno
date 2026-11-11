@@ -32,6 +32,12 @@ interface FloatingPanelProps {
   hoverOpenDelayMs?: number;
   /** Grace period before a hover-out closes it. */
   hoverCloseDelayMs?: number;
+  /**
+   * Move focus into the panel when the trigger opens it, so its contents are reachable by
+   * keyboard and announced by a screen reader. Skipped for a hover open, where moving focus
+   * off whatever the pointer left behind would be a surprise.
+   */
+  focusPanelOnOpen?: boolean;
 }
 
 /**
@@ -59,6 +65,7 @@ export function FloatingPanel({
   openOnHover = false,
   hoverOpenDelayMs = 320,
   hoverCloseDelayMs = 180,
+  focusPanelOnOpen = false,
 }: FloatingPanelProps) {
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -91,6 +98,12 @@ export function FloatingPanel({
         onPointerLeave: () => scheduleHover(false),
       }
     : {};
+
+  useEffect(() => {
+    if (!open || !focusPanelOnOpen) return;
+    if (!triggerRef.current?.contains(document.activeElement)) return;
+    panelRef.current?.focus({ preventScroll: true });
+  }, [open, focusPanelOnOpen]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -188,6 +201,13 @@ export function FloatingPanel({
               ref={panelRef}
               role="dialog"
               aria-modal="false"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.stopPropagation();
+                triggerRef.current?.querySelector<HTMLElement>("button")?.focus();
+                onOpenChange(false);
+              }}
               initial={
                 side === "top"
                   ? { opacity: 0, scale: 0.94, y: 6 }

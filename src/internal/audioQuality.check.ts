@@ -9,7 +9,12 @@
  */
 export {};
 
-import { selectFormatForQuality } from "./audioQuality";
+import {
+  AUDIO_QUALITY_LABELS,
+  getStreamingQuality,
+  selectFormatForQuality,
+  usesBestOfferedFormat,
+} from "./audioQuality";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -27,6 +32,25 @@ const full = [
 
 // High takes the best on offer regardless of any target.
 equal(selectFormatForQuality(full, "high")?.bitrate, 261_000, "high picks the top bitrate");
+
+// Lossless is the fourth tier: the best YouTube stream until an addon supplies a rendition.
+equal(
+  selectFormatForQuality(full, "lossless")?.bitrate,
+  261_000,
+  "lossless takes the best YouTube format",
+);
+equal(
+  AUDIO_QUALITY_LABELS.lossless,
+  "Lossless (addon when available)",
+  "lossless label exists",
+);
+equal(getStreamingQuality(), "high", "new installs stay on high");
+
+// The resolver's MP4 preference must not bite either "best available" tier.
+equal(usesBestOfferedFormat("high"), true, "high uses the best offered format");
+equal(usesBestOfferedFormat("lossless"), true, "lossless uses the best offered format");
+equal(usesBestOfferedFormat("normal"), false, "normal keeps the MP4 preference");
+equal(usesBestOfferedFormat("low"), false, "low keeps the MP4 preference");
 
 // Normal and low snap to the tier nearest their target, not strictly below it.
 equal(selectFormatForQuality(full, "normal")?.bitrate, 131_000, "normal snaps to the ~128k tier");

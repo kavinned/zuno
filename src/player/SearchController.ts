@@ -3,6 +3,8 @@ import type { SearchResults, Track } from "../datasource/types";
 import { isOnline } from "../internal/connectivity";
 import { searchDownloads } from "./offlineStore";
 
+const EMPTY_RESULTS: SearchResults = { artists: [], tracks: [], albums: [], playlists: [] };
+
 export class SearchController {
   constructor(private readonly dataSource: DataSource) {}
 
@@ -12,18 +14,20 @@ export class SearchController {
   ): Promise<SearchResults> {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) {
-      return { artists: [], tracks: [], albums: [], playlists: [] };
+      return { ...EMPTY_RESULTS };
     }
     if (!isOnline()) {
-      return { artists: [], tracks: searchDownloads(normalizedQuery), albums: [], playlists: [] };
+      return { ...EMPTY_RESULTS, tracks: searchDownloads(normalizedQuery) };
     }
+
     if (this.dataSource.search) {
       return this.dataSource.search(normalizedQuery, onUpdate);
     }
-    const tracks = await this.searchTracks(normalizedQuery, (items) => {
-      onUpdate?.({ artists: [], tracks: items, albums: [], playlists: [] });
-    });
-    return { artists: [], tracks, albums: [], playlists: [] };
+    const tracks = await this.searchTracks(
+      normalizedQuery,
+      onUpdate ? (items) => onUpdate({ ...EMPTY_RESULTS, tracks: items }) : undefined,
+    );
+    return { ...EMPTY_RESULTS, tracks };
   }
 
   async searchTracks(query: string, onUpdate?: (tracks: Track[]) => void): Promise<Track[]> {
