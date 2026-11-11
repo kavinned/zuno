@@ -5,8 +5,13 @@ export interface WarmSlot {
   promise: Promise<void>;
 }
 
-/** How long a click waits for the warm before falling back to the ordinary load. */
-export const WARM_JOIN_MS = 3000;
+/**
+ * How long a click waits for the warm before falling back to the ordinary load.
+ *
+ * Kept under the 2500 ms substitution budget so a join normally settles before the caller
+ * starts a duplicate resolve; a timeout is handled as an abandoned warm, not a lost one.
+ */
+export const WARM_JOIN_MS = 2000;
 
 /** Whether the warm slot is preparing `trackId`. */
 export function isWarmingTrack(slot: WarmSlot | null, trackId: string): slot is WarmSlot {

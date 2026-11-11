@@ -215,6 +215,8 @@ export class PlayerController {
   private warmedStream: { trackId: string; data: StreamData } | null = null;
   /** The next track being prepared; a click on it joins this instead of tearing it down. */
   private warming: WarmSlot | null = null;
+  /** Bumped to invalidate a warm whose click stopped waiting for it. */
+  private warmGeneration = 0;
   private crossfadeSec = 0;
   private gaplessEnabled = true;
   private transitionTimerId: number | null = null;
@@ -1277,9 +1279,14 @@ export class PlayerController {
      */
     const warming = this.warming;
     if (isWarmingTrack(warming, track.id)) {
-      await joinWarm(warming, track.id);
+      const joined = await joinWarm(warming, track.id);
       /* A second skip during the wait means this track is no longer wanted. */
       if (this.state.currentTrack?.id !== track.id) return;
+      /*
+       * A timed-out join must not leave the warm free to resolve and preload in parallel with
+       * the load below; that is the duplicate search/download and the late overwrite.
+       */
+      if (!joined) this.abandonWarm(track.id);
     }
 
     try {
@@ -1720,8 +1727,11 @@ export class PlayerController {
     if (this.warmedStream?.trackId === next.id) return;
 
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
+    const generation = ++this.warmGeneration;
     const promise = getStreamData(next)
       .then(async (data) => {
+        /* The click that wanted this warm stopped waiting, so its result must not land. */
+        if (generation !== this.warmGeneration) return;
         this.warmedStream = { trackId: next.id, data };
         logInternalDebug("PlayerController.warmNextTrack audio ready", { trackId: next.id });
         /*
@@ -1758,6 +1768,13 @@ export class PlayerController {
     const { data } = this.warmedStream;
     this.warmedStream = null;
     return data;
+  }
+
+  /** Drops a warm the load has stopped waiting for, so its late result cannot land on the deck. */
+  private abandonWarm(trackId: string): void {
+    if (this.warming?.trackId !== trackId) return;
+    this.warming = null;
+    this.warmGeneration += 1;
   }
 
   /** Whether a track can be handed to a standby deck rather than loaded on the spot. */
