@@ -352,6 +352,7 @@ export function TrackInfo() {
                 open={isAddonInfoOpen}
                 onOpenChange={setIsAddonInfoOpen}
                 openOnHover
+                focusPanelOnOpen
                 side="top"
                 triggerClassName="inline-flex"
                 className="w-56 p-3"
