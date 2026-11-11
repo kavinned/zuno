@@ -226,6 +226,7 @@ interface SetupOptions {
     bitDepth?: number;
   }>;
   clientFactory?: (source: AddonSourceConfig) => AddonClientLike;
+  now?: () => number;
 }
 
 interface Harness {
@@ -275,7 +276,7 @@ async function setup(options: SetupOptions): Promise<Harness> {
     isDownloaded: (trackId) => options.downloaded?.has(trackId) === true,
     getDownloadedTrack: (trackId) => options.downloadedTracks?.get(trackId),
     clientFactory: options.clientFactory ?? defaultFactory,
-    now: () => 0,
+    now: options.now ?? (() => 0),
   });
 
   /* A check may override a fake client's methods before the first service call, so every
@@ -1164,6 +1165,27 @@ function matchRow(overrides: Partial<AddonSearchRow> = {}): AddonSearchRow {
   };
 
   equal(await service.findLosslessMatch(youtubeTarget), null, "a row-cache failure is a miss");
+}
+
+{
+  const sourceId = SOURCE_A;
+  let clock = 1_000_000;
+  const { service, created } = await setup({
+    sources: [{ id: sourceId, baseUrl: "https://cool.example/secret" }],
+    now: () => clock,
+    script: () => ({ searchError: new AddonRequestError("rejected", 403) }),
+  });
+
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a rejected search is a miss");
+  equal(created[0].searchCalls, 1, "the rejected source was tried once");
+
+  clock += 60_000;
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a miss during cooldown");
+  equal(created[0].searchCalls, 1, "a rejected source is skipped during the cooldown");
+
+  clock += 10 * 60_000;
+  equal(await service.findLosslessMatch(youtubeTarget), null, "a miss after the cooldown");
+  equal(created[0].searchCalls, 2, "a rejected source is retried after the cooldown");
 }
 
 console.log("addon/service: ok");

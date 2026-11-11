@@ -181,6 +181,9 @@ function streamFailureMessage(reason: string): string {
 }
 
 const SUBSTITUTION_BUDGET_MS = 2500;
+/* A rejected source is usually a transient 403, so it is retried after a pause instead of
+   staying out of every substitution, which is how it behaved when the flag was permanent. */
+const REJECTED_COOLDOWN_MS = 10 * 60_000;
 
 async function withinDeadline<T>(
   work: Promise<T>,
@@ -212,9 +215,13 @@ export class AddonService {
   private readonly clients = new Map<string, AddonClientLike>();
   /** Probe answers keyed by stream URL; a re-resolve of the same stream costs nothing extra. */
   private readonly probes = new Map<string, AddonLengthProbe>();
+  /** When each rejected source may be tried again. Absent means it may be tried now. */
+  private readonly rejectedUntil = new Map<string, number>();
+  private readonly now: () => number;
 
   constructor(deps: AddonServiceDeps) {
     this.deps = deps;
+    this.now = deps.now ?? Date.now;
   }
 
   async addSource(label: string, rawUrl: string): Promise<AddonSourceConfig> {
@@ -659,6 +666,11 @@ export class AddonService {
    * transient failure, so the source's own manifest fields are handed back unchanged.
    */
   private async recordHealth(source: AddonSourceConfig, health: AddonHealth): Promise<void> {
+    if (health === "rejected") {
+      this.rejectedUntil.set(source.id, this.now() + REJECTED_COOLDOWN_MS);
+    } else {
+      this.rejectedUntil.delete(source.id);
+    }
     /* A concurrent probe may have learned stricter flags since the caller's snapshot. */
     const current = this.deps.registry.get(source.id) ?? source;
     const manifest: AddonManifest = {
@@ -676,8 +688,20 @@ export class AddonService {
   private isEligible(source: AddonSourceConfig): boolean {
     return source.enabled
       && source.baseUrl !== ""
-      && source.lastHealth !== "rejected"
+      && !this.isCoolingDown(source)
       && !this.isGated(source);
+  }
+
+  /*
+   * Only a rejection recorded in this session locks a source out. One persisted from an earlier
+   * session is retried once, so a stale flag left by a restart cannot bench a healthy addon.
+   */
+  private isCoolingDown(source: AddonSourceConfig): boolean {
+    const until = this.rejectedUntil.get(source.id);
+    if (until === undefined) return false;
+    if (this.now() < until) return true;
+    this.rejectedUntil.delete(source.id);
+    return false;
   }
 
   private isGated(source: AddonSourceConfig): boolean {
