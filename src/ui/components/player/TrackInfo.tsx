@@ -189,6 +189,19 @@ export function TrackInfo() {
     };
   }, [currentTrack?.id, targetPlaylist?.id]);
 
+  /*
+   * The stream panel is portalled, so collapsing the row does not unmount it. Close it with
+   * the track and with the details row, or the previous track's stream floats over the next.
+   */
+  const hasAudioDetails = currentTrack !== null
+    && (currentTrack.source === "addon" || currentTrack.addonSubstitution !== undefined);
+  useEffect(() => {
+    setIsAddonInfoOpen(false);
+  }, [currentTrack?.id]);
+  useEffect(() => {
+    if (!hasAudioDetails) setIsAddonInfoOpen(false);
+  }, [hasAudioDetails]);
+
   const addonSources = useAddonSources().sources;
   const hideLikeButton = useHideLikeButton();
   const hideAddToPlaylistButton = useHideAddToPlaylistButton();
@@ -252,6 +265,8 @@ export function TrackInfo() {
         playlistId: target.id,
         isIn: true,
       });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Unable to add this song.", 4000);
     } finally {
       setIsAddingToPlaylist(false);
     }
@@ -322,7 +337,9 @@ export function TrackInfo() {
             showAudioDetails ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
           )}
         >
-          <div className="overflow-hidden">
+          {/* Padding widens the clip past the badge's 8px glow; the negative margin
+              cancels it so the row's layout does not grow, collapsed or open. */}
+          <div className="-m-2 overflow-hidden p-2">
             <div
               className={cn(
                 "flex origin-bottom-left items-center gap-1.5 pt-0.5 transition-[transform,opacity] duration-[400ms] ease-out",
@@ -339,12 +356,24 @@ export function TrackInfo() {
                 triggerClassName="inline-flex"
                 className="w-56 p-3"
                 trigger={(
-                  <AddonBadge
-                    key={`${currentTrack.id}-${addonFormat ?? ""}`}
-                    format={addonFormat}
-                    lossless={substitution?.lossless}
-                    active={isFlacTrack}
-                  />
+                  <button
+                    type="button"
+                    aria-label={
+                      addonSource === undefined
+                        ? "Addon stream details"
+                        : `Addon stream details from ${addonSource}`
+                    }
+                    aria-expanded={isAddonInfoOpen}
+                    onClick={() => setIsAddonInfoOpen((open) => !open)}
+                    className="inline-flex items-center rounded-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <AddonBadge
+                      key={`${currentTrack.id}-${addonFormat ?? ""}`}
+                      format={addonFormat}
+                      lossless={substitution?.lossless}
+                      active={isFlacTrack}
+                    />
+                  </button>
                 )}
               >
                 <div className="flex flex-col gap-2">

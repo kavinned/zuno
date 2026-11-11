@@ -24,6 +24,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   { tab: "playback", category: "Playback", title: "Restore tabs and queues", description: "Restore your playback session after restarting." },
   { tab: "playback", category: "Playback", title: "Audio engine", description: "Choose the playback method and authenticated streaming." },
   { tab: "system", category: "Library", title: "Local music", description: "Create playlists from folders on this computer." },
+  { tab: "system", category: "Library", title: "Addon sources", description: "Servers whose tracks show up in search alongside YouTube." },
   { tab: "system", category: "Library", title: "Cache", description: "Set cache size and clear cached content." },
   { tab: "system", category: "Library", title: "Downloads", description: "Set offline storage limits and remove downloads." },
   { tab: "system", category: "Library", title: "Streaming quality", description: "Choose quality for music played over the network." },
@@ -37,6 +38,8 @@ const ENTRIES: SettingsSearchEntry[] = [
   { tab: "window", category: "Window", title: "Library sidebar", description: "Choose the playlist rail size and hover behavior." },
   { tab: "window", category: "Window", title: "Window controls", description: "Choose macOS, Windows, or native title-bar buttons." },
   { tab: "window", category: "Window", title: "Compact player bar", description: "Use a smaller playback bar." },
+  { tab: "window", category: "Behavior", title: "Hide like button", description: "Remove the like button from the player bar." },
+  { tab: "window", category: "Behavior", title: "Hide add to playlist button", description: "Remove the add to playlist button from the player bar." },
   { tab: "window", category: "Window", title: "System media controls", description: "Show playback in system media controls." },
   { tab: "shortcuts", category: "Shortcuts", title: "Keyboard shortcuts", description: "View, record, or clear keyboard bindings." },
 ];

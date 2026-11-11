@@ -104,7 +104,13 @@ function SourceRow({
         >
           <ArrowDownIcon size={16} aria-hidden="true" />
         </button>
-        <button type="button" className={BUTTON} disabled={busy} onClick={onTest}>
+        <button
+          type="button"
+          className={BUTTON}
+          /* No stored URL means hydrate already shows "Not usable"; a probe would overwrite it. */
+          disabled={busy || source.baseUrl === ""}
+          onClick={onTest}
+        >
           Test
         </button>
         <button type="button" className={BUTTON} disabled={busy} onClick={onEdit}>
@@ -132,6 +138,7 @@ export function AddonSourcesSettings() {
   const [insecure, setInsecure] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [reordering, setReordering] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -175,6 +182,8 @@ export function AddonSourcesSettings() {
   };
 
   const handleSubmit = async () => {
+    // Without the loaded snapshot an empty `sources` would let a duplicate URL through.
+    if (!loaded) return;
     setError(null);
     const nextLabel = label.trim();
     const nextUrl = url.trim();
@@ -194,8 +203,8 @@ export function AddonSourcesSettings() {
     }
 
     if (
-      editingId === null
-      && sources.some((entry) => entry.baseUrl === normalizedUrl)
+      normalizedUrl !== null
+      && sources.some((entry) => entry.baseUrl === normalizedUrl && entry.id !== editingId)
     ) {
       setError("This source is already added.");
       return;
@@ -232,6 +241,8 @@ export function AddonSourcesSettings() {
   };
 
   const handleMove = async (source: AddonSourceConfig, delta: number) => {
+    // A second click would read the pre-reorder snapshot and lose the first step.
+    if (reordering) return;
     const ids = sources.map((entry) => entry.id);
     const index = ids.indexOf(source.id);
     const target = index + delta;
@@ -241,10 +252,13 @@ export function AddonSourcesSettings() {
     moved[index] = ids[target];
     moved[target] = ids[index];
     setError(null);
+    setReordering(true);
     try {
       await addonService.reorder(moved);
     } catch (caught) {
       setError(errorMessage(caught));
+    } finally {
+      setReordering(false);
     }
   };
 
@@ -311,7 +325,7 @@ export function AddonSourcesSettings() {
               source={source}
               index={index}
               count={sources.length}
-              busy={busyId === source.id}
+              busy={reordering || busyId === source.id}
               onToggle={(enabled) => void handleToggle(source, enabled)}
               onMove={(delta) => void handleMove(source, delta)}
               onTest={() => void handleTest(source)}
@@ -359,7 +373,7 @@ export function AddonSourcesSettings() {
           <button
             type="submit"
             className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-            disabled={saving}
+            disabled={saving || !loaded}
           >
             {saving ? "Saving…" : editingId === null ? "Add" : "Save"}
           </button>
