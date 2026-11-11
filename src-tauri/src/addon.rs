@@ -121,7 +121,7 @@ fn declared_body_too_large(content_length: Option<u64>) -> bool {
     content_length.is_some_and(|length| length > ADDON_MAX_BODY_BYTES as u64)
 }
 
-fn parse_content_range_total(value: &str) -> Option<u64> {
+pub(crate) fn parse_content_range_total(value: &str) -> Option<u64> {
     value.rsplit_once('/')?.1.trim().parse().ok()
 }
 
@@ -272,7 +272,9 @@ pub(crate) async fn addon_probe_length(
     url: String,
     sniff_flac: Option<bool>,
 ) -> Result<AddonLengthProbe, String> {
-    validate_addon_url(&url)?;
+    /* A resolved media URL follows the media policy, the same one playback uses; the base-URL
+       policy would refuse a public plain-http CDN the stream itself accepts. */
+    validate_http_url(&url)?;
     probe_length(&url, sniff_flac.unwrap_or(false)).await
 }
 

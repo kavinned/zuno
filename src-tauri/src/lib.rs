@@ -4352,6 +4352,31 @@ async fn fill_media_buffer(
                                 }
                             }
                             if index == 0 {
+                                /*
+                                 * A 206 states the real total. When it disagrees with the
+                                 * declared length — usually an addon whose resolve carried a
+                                 * stale size — the planned ranges would truncate the body.
+                                 * Fail here so the whole-file fallback takes the bytes.
+                                 */
+                                if let Some(actual) = response
+                                    .headers()
+                                    .get(reqwest::header::CONTENT_RANGE)
+                                    .and_then(|value| value.to_str().ok())
+                                    .and_then(addon::parse_content_range_total)
+                                {
+                                    let planned = abandoned
+                                        .lock()
+                                        .map(|guard| guard.total as u64)
+                                        .unwrap_or(0);
+                                    if planned != 0 && actual != planned {
+                                        return Err((
+                                            index,
+                                            cache_error(format!(
+                                                "range total changed: {actual} of {planned} bytes"
+                                            )),
+                                        ));
+                                    }
+                                }
                                 match response.bytes().await {
                                     Ok(body) => {
                                         let expected = expected_range_len(start as u64, end as u64);
@@ -4865,6 +4890,12 @@ fn native_decoder(
      */
     let seekable = reader.is_seekable();
     let byte_len = reader.byte_len();
+    /*
+     * Known ceiling: rodio takes this length once. If the whole-file fallback later adopts a
+     * body of a different size (`MediaBuffer::adopt_complete`), FLAC seek math keeps the declared
+     * length. Playback stays correct; only a seek on that rare mismatched stream lands off.
+     * Upgrade path: rebuild the decoder when the buffer's total changes.
+     */
     let mut builder = rodio::Decoder::builder().with_data(reader).with_seekable(seekable);
     if let Some(byte_len) = byte_len {
         builder = builder.with_byte_len(byte_len);
