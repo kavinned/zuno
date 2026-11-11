@@ -863,7 +863,9 @@ impl Engine {
             Command::Seek(seconds) => {
                 let target = Duration::from_secs_f64(seconds.max(0.0));
                 if let Err(error) = self.decks[self.active].sink.try_seek(target) {
-                    eprintln!("[internal][tauri][warn] native audio seek failed: {error}");
+                    eprintln!(
+                        "[internal][tauri][warn] native audio seek failed: {error} ({error:?}) target_sec={seconds:.3}"
+                    );
                 }
             }
             Command::Volume { volume, muted } => {

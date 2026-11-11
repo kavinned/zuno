@@ -4834,6 +4834,25 @@ impl Drop for TempAudioFile {
 
 
 
+fn native_decoder(
+    reader: Box<dyn symphonia::core::io::MediaSource>,
+) -> Result<rodio::Decoder<Box<dyn symphonia::core::io::MediaSource>>, rodio::decoder::DecoderError>
+{
+    /*
+     * Rodio's builder defaults to an unseekable source and wraps the reader in an adapter that
+     * reports exactly that, ignoring what the reader itself says. Symphonia then treats every
+     * backward seek as forward-only, so the seekbar fails on any track already past the target.
+     * All of our readers seek; the length is what FLAC's binary search needs.
+     */
+    let seekable = reader.is_seekable();
+    let byte_len = reader.byte_len();
+    let mut builder = rodio::Decoder::builder().with_data(reader).with_seekable(seekable);
+    if let Some(byte_len) = byte_len {
+        builder = builder.with_byte_len(byte_len);
+    }
+    builder.build()
+}
+
 /**
  * Decodes a track onto a deck.
  *
@@ -4870,7 +4889,7 @@ async fn native_audio_load(
         if opus_source::is_opus(&mime_type) {
             return opus_source::OpusSource::new(reader, &mime_type).map(equalized);
         }
-        rodio::Decoder::new(reader)
+        native_decoder(reader)
             .map(equalized)
             .map_err(|error| format!("audio decode failed: {error}"))
     })
@@ -6907,5 +6926,42 @@ mod tests {
         let missing = std::env::temp_dir().join("zuno_nonexistent_audio_file.mp3");
         let result_missing = extract_local_audio_artwork(&missing);
         assert!(result_missing.is_err(), "missing file must fail extraction");
+    }
+
+    /// One second of 16-bit mono PCM, which symphonia seeks by byte offset.
+    fn wav_bytes(samples: u32) -> Vec<u8> {
+        let data_len = samples * 2;
+        let mut bytes = Vec::with_capacity(44 + data_len as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&8000u32.to_le_bytes());
+        bytes.extend_from_slice(&(8000u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(44 + data_len as usize, 0);
+        bytes
+    }
+
+    /// The seekbar asks for a time before the current position, which symphonia can only do by
+    /// seeking the reader backwards. It refuses that on a source rodio did not mark seekable.
+    #[test]
+    fn native_decoder_seeks_backwards_on_a_seekable_reader() {
+        use rodio::Source as _;
+
+        let reader =
+            Box::new(std::io::Cursor::new(wav_bytes(8000))) as Box<dyn symphonia::core::io::MediaSource>;
+        let mut decoder = super::native_decoder(reader).unwrap();
+        for _ in 0..100 {
+            let _ = decoder.next();
+        }
+
+        let seeked = decoder.try_seek(Duration::ZERO);
+        assert!(seeked.is_ok(), "backward seek failed: {seeked:?}");
     }
 }
