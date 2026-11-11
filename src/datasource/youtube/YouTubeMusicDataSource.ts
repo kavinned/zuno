@@ -416,6 +416,13 @@ const ARTIST_REFRESH_COOLDOWN_MS = 60_000;
 const ARTIST_SUBSCRIPTION_OVERRIDE_MS = 60_000;
 const PLAYLIST_PAGE_SESSION_TTL_MS = 10 * 60_000;
 const PLAYLIST_TRACK_CACHE_VERSION = "v6";
+/** How long a click waits for an addon match before YouTube wins. */
+const SUBSTITUTION_BUDGET_MS = 3000;
+/**
+ * A next-track warm is not holding up playback, so it can spend longer on a cold addon
+ * search + resolve — the case where the click budget expires a few milliseconds early.
+ */
+const WARM_SUBSTITUTION_BUDGET_MS = 8000;
 const PLAYLIST_EMPTY_RETRY_DELAYS_MS = [0, 600, 1_500];
 
 class YouTubeMusicAuthError extends AuthExpiredError {}
@@ -496,11 +503,15 @@ export class YouTubeMusicDataSource extends DataSource {
   private async substituteLossless(
     track: Track,
     engine: "rust" | "native",
+    options: { background?: boolean } = {},
   ): Promise<AddonSubstitutionMatch | null> {
     if (track.source !== "youtube" || this.addons === undefined) return null;
     if (this.streamingQuality() !== "lossless") return null;
     try {
-      return await this.addons.findLosslessMatch(track, { engine, budgetMs: 2500 });
+      return await this.addons.findLosslessMatch(track, {
+        engine,
+        budgetMs: options.background ? WARM_SUBSTITUTION_BUDGET_MS : SUBSTITUTION_BUDGET_MS,
+      });
     } catch {
       return null;
     }
@@ -6489,7 +6500,7 @@ export class YouTubeMusicDataSource extends DataSource {
     return links;
   }
 
-  async getStreamData(track: Track): Promise<StreamData> {
+  async getStreamData(track: Track, options: { background?: boolean } = {}): Promise<StreamData> {
     /*
      * Local files always read bytes via local_audio_read, regardless of engine.
      *
@@ -6512,7 +6523,7 @@ export class YouTubeMusicDataSource extends DataSource {
     }
 
     if (usesRustAudioEngine()) {
-      return this.getRustStreamData(track);
+      return this.getRustStreamData(track, options);
     }
 
     /*
@@ -6550,7 +6561,7 @@ export class YouTubeMusicDataSource extends DataSource {
       return this.getNativeStreamData(track);
     }
 
-    const match = await this.substituteLossless(track, "native");
+    const match = await this.substituteLossless(track, "native", options);
     if (match) {
       try {
         const payload = await invoke<NativeAudioSourcePayload>("fetch_audio_source", {
@@ -6631,7 +6642,7 @@ export class YouTubeMusicDataSource extends DataSource {
    * every case Rust already has, or can get, the bytes — asking the webview to carry them first
    * was only ever in service of an `<audio>` element that no longer exists on this path.
    */
-  private async getRustStreamData(track: Track): Promise<StreamData> {
+  private async getRustStreamData(track: Track, options: { background?: boolean } = {}): Promise<StreamData> {
     if (track.source === "local") {
       if (!track.localPath) {
         throw new Error("Local track path is missing.");
@@ -6671,7 +6682,7 @@ export class YouTubeMusicDataSource extends DataSource {
       };
     }
 
-    const match = await this.substituteLossless(track, "rust");
+    const match = await this.substituteLossless(track, "rust", options);
     if (match) {
       return {
         mimeType: match.stream.mimeType,

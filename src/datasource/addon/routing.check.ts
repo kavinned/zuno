@@ -100,11 +100,13 @@ resolved.bitDepth = 16;
 resolved.kbps = 1411;
 
 let substitutionCalls = 0;
+const substitutionBudgets: Array<number | undefined> = [];
 const substitutionMatch: AddonSubstitutionMatch = { track, stream: resolved };
 const substitutionAddons: AddonPlaybackSource = {
   ...fakeAddons,
-  findLosslessMatch: async (target) => {
+  findLosslessMatch: async (target, options) => {
     substitutionCalls += 1;
+    substitutionBudgets.push(options?.budgetMs);
     equal(target.id, youtubeTrack.id, "the substitution target is the YouTube track");
     return substitutionMatch;
   },
@@ -123,6 +125,7 @@ equal(substituted.addonSubstitution?.trackId, track.id, "the substitution is rec
 equal(substituted.addonSubstitution?.format, undefined, "no format is invented");
 equal(substituted.audioInfo?.sampleRateHz, 44100, "audio info is propagated");
 equal(substitutionCalls, 1, "substitution runs once");
+equal(substitutionBudgets[0], 3000, "a click path asks for the 3 s budget");
 
 const highQualitySource = new YouTubeMusicDataSource(substitutionAddons, () => "high");
 highQualitySource.resolveStreamUrl = async () => ({
@@ -210,5 +213,15 @@ const substitutionFetch = nativeCalls.find(
 check(substitutionFetch !== undefined, "the addon fetch was attempted");
 equal(substitutionFetch.args.contentLength, undefined, "the native substitution fetch omits contentLength");
 equal(substitutionFetch.args.synchronous, true, "the native substitution fetch is synchronous");
+
+/* A background warm is not making anyone wait, so it may spend seconds on a cold addon. */
+substitutionBudgets.length = 0;
+const warmSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+warmSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+await warmSource.getStreamData(youtubeTrack, { background: true });
+equal(substitutionBudgets[0], 8000, "a background warm asks for the 8 s budget");
 
 console.log("addon/routing: ok");

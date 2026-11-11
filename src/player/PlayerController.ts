@@ -1757,7 +1757,8 @@ export class PlayerController {
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
     const generation = ++this.warmGeneration;
     const engine = getAudioEngineMode();
-    const promise = getStreamData(next)
+    /* Nobody is waiting on this, so substitution may outlast the click's budget. */
+    const promise = getStreamData(next, { background: true })
       .then(async (data) => {
         /* The click that wanted this warm stopped waiting, so its result must not land. */
         if (generation !== this.warmGeneration) return;

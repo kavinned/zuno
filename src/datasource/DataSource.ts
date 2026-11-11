@@ -72,7 +72,11 @@ export abstract class DataSource {
   resolveLink?(url: string): Promise<ResolvedLink | null>;
   searchTracks?(query: string, onUpdate?: (tracks: Track[]) => void): Promise<Track[]>;
   getSearchSuggestions?(query: string, onUpdate?: (suggestions: string[]) => void): Promise<string[]>;
-  getStreamData?(track: Track): Promise<StreamData>;
+  /**
+   * `background` marks a request nobody is waiting on (the next-track warm), which may spend
+   * longer on addon substitution than a click can afford.
+   */
+  getStreamData?(track: Track, options?: { background?: boolean }): Promise<StreamData>;
   /** Resolves the native-engine path explicitly, bypassing the Rust branch. */
   getNativeStreamData?(track: Track): Promise<StreamData>;
   /**
