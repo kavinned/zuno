@@ -120,12 +120,16 @@ impl Read for BufferReader {
                         .map_err(|_| io::Error::other("audio buffer lock poisoned"))?;
                     guard.read(self.position, end)
                 };
-                if bytes.is_empty() {
-                    return Ok(0);
+                /*
+                 * The buffer reported this range as available but the second lock saw it empty:
+                 * `clear` ran between the two. Falling through to the wait path re-checks state
+                 * rather than reporting EOF, which would end the song early.
+                 */
+                if !bytes.is_empty() {
+                    out[..bytes.len()].copy_from_slice(&bytes);
+                    self.position += bytes.len();
+                    return Ok(bytes.len());
                 }
-                out[..bytes.len()].copy_from_slice(&bytes);
-                self.position += bytes.len();
-                return Ok(bytes.len());
             }
             /*
              * A failed download reports EOF rather than an error. The decoder then finishes the

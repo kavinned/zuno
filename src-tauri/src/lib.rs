@@ -3445,6 +3445,11 @@ fn load_superseded(slot: Option<(usize, u64)>) -> bool {
     }
 }
 
+/// Marks whatever fill owns this load slot as abandoned, so it gives up `PLAYBACK_FILL_LOCK`.
+fn supersede_load(slot_index: usize) {
+    LOAD_GENERATION[slot_index].fetch_add(1, Ordering::SeqCst);
+}
+
 /**
  * Smallest total worth splitting, and the floor on a range.
  *
@@ -4093,10 +4098,21 @@ async fn fetch_audio_source(
     cookie: Option<String>,
     style: Option<MediaRequestStyle>,
     content_length: Option<u64>,
+    // Download the whole body before returning, so a CDN failure is an error the caller sees.
+    synchronous: Option<bool>,
 ) -> Result<AudioSourcePayload, CommandError> {
     let style = style.unwrap_or_default();
     let request_url = validate_media_url(style, &url)?;
-    let total = resolved_media_length(style, &request_url, &url, content_length).await as usize;
+    /*
+     * A synchronous caller cannot accept the pending-buffer path: it returns before the body
+     * arrives and the failure would surface later as a dead media element. Zero forces the
+     * whole-body branch below, which fetches and validates before answering.
+     */
+    let total = if synchronous.unwrap_or(false) {
+        0
+    } else {
+        resolved_media_length(style, &request_url, &url, content_length).await as usize
+    };
     let server = media_server()?;
     let key = format!("stream-{track_id}");
 
@@ -4658,7 +4674,10 @@ async fn open_native_audio_reader(
                     return Err(cache_error("audio download returned no data"));
                 }
                 let path = temp_audio_path();
-                fs::write(&path, &bytes)
+                let write_path = path.clone();
+                tauri::async_runtime::spawn_blocking(move || fs::write(&write_path, &bytes))
+                    .await
+                    .map_err(|error| cache_error(format!("audio temp write failed: {error}")))?
                     .map_err(|error| cache_error(format!("audio temp write failed: {error}")))?;
                 let file = match File::open(&path) {
                     Ok(file) => file,
@@ -5086,6 +5105,9 @@ fn native_audio_has_standby(
 fn native_audio_drop_standby(
     state: tauri::State<'_, audio::NativeAudio>,
 ) -> Result<(), CommandError> {
+    // Standby loads always fill slot 1. Superseding it here is what releases the fill permit
+    // when the queue moves on before the preload's download has finished.
+    supersede_load(1);
     state.send(audio::Command::DropStandby).map_err(cache_error)
 }
 
@@ -6131,7 +6153,7 @@ mod tests {
         audio_chunk_size, playback_ranges, serialize_cookie_pairs, MediaBuffer, AUDIO_HEAD_CHUNK_BYTES, signed_content_length, store_media_item,
         expected_range_len, range_header_value, redact_media_url, MediaRequestStyle,
         MediaItem, AUDIO_MIN_CHUNK_BYTES, MEDIA_SERVER_MAX_ITEMS, OFFLINE_CHUNK_BYTES,
-        load_superseded, LOAD_GENERATION, bytes_preview,
+        load_superseded, supersede_load, LOAD_GENERATION, bytes_preview,
         YoutubeAccountStore, generate_slot_id, login_partition_directory_name,
         decode_slot_id_bytes, LEGACY_ACCOUNT_SLOT_ID, extract_local_audio_artwork,
     };
@@ -6393,6 +6415,26 @@ mod tests {
 
         // No slot at all — the media-server path — is never superseded.
         assert!(!load_superseded(None));
+    }
+
+    /**
+     * Dropping the standby supersedes its fill.
+     *
+     * Without the bump, an abandoned standby fill kept `PLAYBACK_FILL_LOCK` for its whole
+     * download and the next track's fill queued behind it until the decoder's head read timed
+     * out — an eight-second load that should have been instant.
+     */
+    #[test]
+    fn dropping_the_standby_supersedes_its_fill() {
+        let slot_index = 1; // Standby, same reasoning as the slot test above.
+        let generation = LOAD_GENERATION[slot_index].fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(!load_superseded(Some((slot_index, generation))));
+
+        supersede_load(slot_index);
+        assert!(
+            load_superseded(Some((slot_index, generation))),
+            "an abandoned standby fill must see its slot superseded",
+        );
     }
 
     /// Ranges land out of order, so what can be served is the leading run of chunks — not the
