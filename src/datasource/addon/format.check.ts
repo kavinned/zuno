@@ -6,6 +6,8 @@ function check(condition: boolean, message: string): void {
 }
 
 check(acceptAddonStream({ url: "https://cdn/a.flac", format: "flac" }, "rust").ok, "flac accepted on rust");
+const bareFlac = acceptAddonStream({ url: "https://cdn/a", format: "flac" }, "rust");
+check(bareFlac.ok && bareFlac.stream.codec === "flac", "an accepted stream names its codec");
 const alac = acceptAddonStream({ url: "https://cdn/a", format: "alac", codec: "alac", container: "mp4", mimeType: "audio/mp4" }, "rust");
 check(alac.ok && alac.stream.lossless, "alac accepted and lossless on rust");
 const alacNative = acceptAddonStream({ url: "https://cdn/a", format: "alac", codec: "alac", container: "mp4", mimeType: "audio/mp4" }, "native");

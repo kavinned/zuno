@@ -546,7 +546,7 @@ export class YouTubeMusicDataSource extends DataSource {
     return {
       trackId: match.track.id,
       sourceId: match.track.addon?.sourceId,
-      format: match.track.addon?.format,
+      format: match.stream.codec ?? match.track.addon?.format,
       sampleRateHz: match.stream.sampleRateHz,
       bitDepth: match.stream.bitDepth,
       kbps: match.stream.kbps,

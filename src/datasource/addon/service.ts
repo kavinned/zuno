@@ -1,5 +1,5 @@
 import type { AudioQuality } from "../../internal/audioQuality";
-import { logInternalInfo } from "../../internal/logging";
+import { logInternalDebug, logInternalInfo } from "../../internal/logging";
 import type { AddonStreamStats, Track } from "../types";
 import { AddonClient, AddonRequestError, type AddonClientCallOptions } from "./client";
 import { acceptAddonStream, type AddonEngine } from "./format";
@@ -405,7 +405,7 @@ export class AddonService {
       lossless: stream.lossless,
     };
     if (contentLength !== undefined) resolved.contentLength = contentLength;
-    const codec = firstNonBlank(answer.codec, answer.fileCodec);
+    const codec = firstNonBlank(answer.codec, answer.fileCodec) ?? stream.codec;
     if (codec !== undefined) resolved.codec = codec;
     const sampleRateHz = stream.sampleRateHz ?? probe?.sampleRateHz;
     if (sampleRateHz !== undefined) resolved.sampleRateHz = sampleRateHz;
@@ -640,6 +640,18 @@ export class AddonService {
         deadline - Date.now(),
         controller,
       );
+      logInternalDebug("addon.substitution.search", {
+        sourceId: source.id,
+        query,
+        rows: found?.length ?? 0,
+        sample: (found ?? []).slice(0, 5).map((row) => ({
+          title: row.title,
+          artist: row.artist,
+          durationSec: row.durationSec,
+          format: row.format,
+          audioQuality: row.audioQuality,
+        })),
+      });
       return found ?? [];
     } catch (error) {
       const health = healthForError(error);

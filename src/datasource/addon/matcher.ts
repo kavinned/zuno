@@ -162,6 +162,16 @@ export function rowClaimsLossless(row: AddonSearchRow): boolean {
   return LOSSLESS_CODECS.test(text) || LOSSLESS_TEXTS.some((token) => text.includes(token));
 }
 
+/**
+ * Whether the row states a codec or quality at all.
+ *
+ * Some addons (Nebula) leave search rows bare and only name the format when the stream is
+ * resolved, so silence is not a lossy claim — the stream answer is what decides.
+ */
+function rowNamesCodec(row: AddonSearchRow): boolean {
+  return `${row.format ?? ""} ${row.audioQuality ?? ""}`.trim() !== "";
+}
+
 function compareRanked(left: RankedCandidate, right: RankedCandidate): number {
   const losslessDelta =
     Number(rowClaimsLossless(right.candidate.row)) - Number(rowClaimsLossless(left.candidate.row));
@@ -181,7 +191,7 @@ export function rankAddonCandidates(
 
   for (const candidate of candidates) {
     const row = candidate.row;
-    if (!allowLossy && !rowClaimsLossless(row)) continue;
+    if (!allowLossy && rowNamesCodec(row) && !rowClaimsLossless(row)) continue;
 
     const rowParts = parseTrackTitle(row.title);
     if (!titleCoreMatches(targetParts, rowParts)) continue;

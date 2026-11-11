@@ -3,6 +3,7 @@ import type { AddonStreamAnswer } from "./types";
 export interface AcceptedAddonStream {
   url: string;
   mimeType: string;
+  codec: StreamKind;
   lossless: boolean;
   sampleRateHz?: number;
   bitDepth?: number;
@@ -183,6 +184,7 @@ export function acceptAddonStream(answer: AddonStreamAnswer, engine: AddonEngine
   const stream: AcceptedAddonStream = {
     url,
     mimeType: resolved.mimeType,
+    codec: resolved.kind,
     lossless: LOSSLESS_KINDS.has(resolved.kind),
   };
   const sampleRateHz = normalizeSampleRate(answer.sampleRate);

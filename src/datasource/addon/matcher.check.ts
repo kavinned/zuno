@@ -105,6 +105,11 @@ equal(
   "lossy rows are filtered when lossy fallback is off",
 );
 equal(
+  rank([row({ id: "unclaimed", format: undefined, audioQuality: undefined })]).length,
+  1,
+  "a row that makes no codec claim is still tried, because the stream answer decides",
+);
+equal(
   rank([row({ id: "mp3", format: "mp3" })], { allowLossy: true }).length,
   1,
   "lossy rows are eligible when fallback is allowed",
