@@ -30,6 +30,10 @@ import {
 } from "../../settings/defaultPlaylist";
 import { useAddonSources } from "../../settings/addonSources";
 import {
+  useHideAddToPlaylistButton,
+  useHideLikeButton,
+} from "../../settings/playerControls";
+import {
   getLocalPlaylistItems,
   isLocalPlaylist,
   subscribeToLocalPlaylists,
@@ -186,6 +190,8 @@ export function TrackInfo() {
   }, [currentTrack?.id, targetPlaylist?.id]);
 
   const addonSources = useAddonSources().sources;
+  const hideLikeButton = useHideLikeButton();
+  const hideAddToPlaylistButton = useHideAddToPlaylistButton();
 
   if (!currentTrack) {
     return null;
@@ -278,7 +284,7 @@ export function TrackInfo() {
           iconSize={22}
         />
       )}
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-col">
         <div ref={titleViewportRef} className="relative min-w-0 overflow-hidden">
           {/* Hidden measuring copy — Marquee duplicates its children, so width
               must be read from a single stable node. */}
@@ -300,7 +306,7 @@ export function TrackInfo() {
             </Marquee>
           )}
         </div>
-        <div className="truncate text-xs text-muted-foreground">
+        <div className="mb-0.5 truncate text-xs text-muted-foreground">
           {/* Addon artists have no artist id, so their names must not trigger a YouTube search. */}
           <ArtistLinks
             artists={currentTrack.artists}
@@ -308,45 +314,61 @@ export function TrackInfo() {
             interactive={currentTrack.source !== "addon"}
           />
         </div>
-        {showAudioDetails && (
-          <div className="flex items-center gap-1.5">
-            <FloatingPanel
-              open={isAddonInfoOpen}
-              onOpenChange={setIsAddonInfoOpen}
-              openOnHover
-              side="top"
-              triggerClassName="inline-flex"
-              className="w-56 p-3"
-              trigger={(
-                <AddonBadge
-                  key={`${currentTrack.id}-${addonFormat ?? ""}`}
-                  format={addonFormat}
-                  lossless={substitution?.lossless}
-                  active={isFlacTrack}
-                />
+        {/* Kept mounted so the row can grow and shrink instead of snapping in under the title. */}
+        <div
+          aria-hidden={!showAudioDetails}
+          className={cn(
+            "grid transition-[grid-template-rows] duration-[400ms] ease-out",
+            showAudioDetails ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+          )}
+        >
+          <div className="overflow-hidden">
+            <div
+              className={cn(
+                "flex origin-bottom-left items-center gap-1.5 pt-0.5 transition-[transform,opacity] duration-[400ms] ease-out",
+                showAudioDetails
+                  ? "translate-y-0 scale-100 opacity-100"
+                  : "translate-y-2 scale-95 opacity-0",
               )}
             >
-              <div className="flex flex-col gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Addon stream
-                </span>
-                {addonSource !== undefined && (
-                  <span className="text-xs text-muted-foreground">{addonSource}</span>
+              <FloatingPanel
+                open={isAddonInfoOpen}
+                onOpenChange={setIsAddonInfoOpen}
+                openOnHover
+                side="top"
+                triggerClassName="inline-flex"
+                className="w-56 p-3"
+                trigger={(
+                  <AddonBadge
+                    key={`${currentTrack.id}-${addonFormat ?? ""}`}
+                    format={addonFormat}
+                    lossless={substitution?.lossless}
+                    active={isFlacTrack}
+                  />
                 )}
-                <span className="text-xs text-foreground">
-                  {audioInfoText !== "" ? audioInfoText : "Format details unavailable"}
-                </span>
-                {addonFormat !== undefined && (
-                  <span className="text-[10px] uppercase text-muted-foreground">{addonFormat}</span>
-                )}
-              </div>
-            </FloatingPanel>
+              >
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Addon stream
+                  </span>
+                  {addonSource !== undefined && (
+                    <span className="text-xs text-muted-foreground">{addonSource}</span>
+                  )}
+                  <span className="text-xs text-foreground">
+                    {audioInfoText !== "" ? audioInfoText : "Format details unavailable"}
+                  </span>
+                  {addonFormat !== undefined && (
+                    <span className="text-[10px] uppercase text-muted-foreground">{addonFormat}</span>
+                  )}
+                </div>
+              </FloatingPanel>
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {canLikeCurrentTrack && (
+        {!hideLikeButton && canLikeCurrentTrack && (
           <button
             type="button"
             className={cn(
@@ -394,7 +416,7 @@ export function TrackInfo() {
         )}
 
         {/* Addon tracks belong to no playlist; local and YouTube tracks keep their own paths. */}
-        {currentTrack.source !== "addon" && (
+        {!hideAddToPlaylistButton && currentTrack.source !== "addon" && (
         <FloatingPanel
           open={isDefaultMenuOpen}
           onOpenChange={setIsDefaultMenuOpen}

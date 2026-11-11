@@ -88,8 +88,12 @@ import {
 import {
   setCompactPlayerBar,
   setExtraPlayerControlsAlwaysVisible,
+  setHideAddToPlaylistButton,
+  setHideLikeButton,
   useCompactPlayerBar,
   useExtraPlayerControlsAlwaysVisible,
+  useHideAddToPlaylistButton,
+  useHideLikeButton,
 } from "../settings/playerControls";
 import {
   RENDER_EFFECTS,
@@ -657,6 +661,8 @@ export function SettingsPage({
   const searchSuggestionsEnabled = useSearchSuggestionsEnabled();
   const extraPlayerControlsAlwaysVisible = useExtraPlayerControlsAlwaysVisible();
   const compactPlayerBar = useCompactPlayerBar();
+  const hideLikeButton = useHideLikeButton();
+  const hideAddToPlaylistButton = useHideAddToPlaylistButton();
   const windowsStyleWindowControls = useWindowsStyleWindowControls();
   const nativeWindowControls = useNativeWindowControls();
   const forceWindowControls = useForceWindowControls();
@@ -2064,6 +2070,20 @@ export function SettingsPage({
               description="Keep lyrics and queue visible instead of showing them only on hover."
               checked={extraPlayerControlsAlwaysVisible}
               onCheckedChange={setExtraPlayerControlsAlwaysVisible}
+            />
+
+            <SettingToggle
+              title="Hide like button"
+              description="Remove the like button from the player bar."
+              checked={hideLikeButton}
+              onCheckedChange={setHideLikeButton}
+            />
+
+            <SettingToggle
+              title="Hide add to playlist button"
+              description="Remove the add to playlist button from the player bar."
+              checked={hideAddToPlaylistButton}
+              onCheckedChange={setHideAddToPlaylistButton}
             />
 
             <SettingToggle

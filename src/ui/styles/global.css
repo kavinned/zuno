@@ -703,7 +703,10 @@ html[data-fx-off~="marquee"] .animate-marquee-vertical {
 .flac-badge-active {
   position: relative;
   overflow: hidden;
-  animation: flac-badge-glow 2.6s ease-in-out infinite;
+  /* Enter on every mount (each new track); the glow starts once the entrance settles. */
+  animation:
+    flac-badge-enter 320ms ease-out both,
+    flac-badge-glow 2.6s 320ms ease-in-out infinite;
 }
 
 .flac-badge-active::after {
@@ -719,6 +722,17 @@ html[data-fx-off~="marquee"] .animate-marquee-vertical {
   );
   transform: translateX(-120%);
   animation: flac-badge-sheen 900ms ease-out 1;
+}
+
+@keyframes flac-badge-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes flac-badge-sheen {
