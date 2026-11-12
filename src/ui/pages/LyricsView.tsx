@@ -795,7 +795,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             aria-label="Close animated cover"
             className="relative min-h-0 flex-1 overflow-hidden"
         >
-            <div className={cn("absolute inset-0 grid place-items-center", isWideLayout && "p-6")}>
+            <div className={cn("absolute inset-0 flex items-center justify-center overflow-hidden", isWideLayout ? "p-6" : "py-[0.5em]")}>
                 {motion ? (
                     <MotionArtwork
                         motion={motion}
@@ -805,10 +805,10 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             setMotion(null);
                         }}
                         className={cn(
-                            "h-full w-full object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            "opacity-0 transition-opacity duration-500 data-ready:opacity-100",
                             isWideLayout
-                                ? "max-h-[48rem] max-w-[48rem] rounded-2xl"
-                                : "max-h-[16rem] max-w-[16rem]",
+                                ? "h-full w-full max-h-[48rem] max-w-[48rem] rounded-2xl object-contain"
+                                : "h-full w-full max-h-full max-w-full rounded-lg object-contain",
                         )}
                     />
                 ) : (
@@ -816,10 +816,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         artworkUrl={track?.artworkUrl}
                         size={512}
                         className={cn(
-                            "aspect-square h-full max-h-full w-auto max-w-full shadow-2xl shadow-black/50",
                             isWideLayout
-                                ? "max-h-[48rem] max-w-[48rem] rounded-2xl"
-                                : "max-h-[16rem] max-w-[16rem]",
+                                ? "aspect-square h-full max-h-[48rem] w-auto max-w-[48rem] rounded-2xl shadow-2xl shadow-black/50"
+                                : "aspect-square h-full max-h-full w-auto max-w-full rounded-lg",
                         )}
                         iconSize={64}
                         loading="eager"
@@ -902,11 +901,8 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                 </button>
             </div>
 
-            <div className="relative flex min-h-0 flex-1 flex-col">
-                {isMotionOpen && !isWideLayout && motionPanel}
-
-                <div className="relative flex min-h-0 flex-1 flex-col @4xl/lyrics:flex-row">
-                {isMotionOpen && isWideLayout && motionPanel}
+            <div className="relative flex min-h-0 flex-1 flex-col @4xl/lyrics:flex-row">
+                {isMotionOpen && motionPanel}
                 {/* Wide enough for two columns: the song gets a poster, the lyrics get the rest. */}
                 {isWideLayout && !isMotionOpen && (
                     <aside className="hidden shrink-0 flex-col gap-6 px-8 py-8 @4xl/lyrics:flex @4xl/lyrics:w-[19rem] @6xl/lyrics:w-[22rem]">
@@ -1103,7 +1099,6 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         </button>
                     )}
                 </div>
-            </div>
             </div>
 
             <footer className="relative flex h-10 shrink-0 items-center justify-between gap-3 px-6 pb-2 text-xs text-muted-foreground">
