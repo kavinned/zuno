@@ -10,6 +10,7 @@ import {
     useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { motion as motionLib } from "motion/react";
 import { useReduceMotion } from "../settings/renderEffects";
 import { cn } from "@/lib/utils";
 import {
@@ -788,15 +789,39 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             loading="eager"
         />
     );
+    const coverLayoutId = reduce ? undefined : "lyrics-cover";
+    const coverTitleLayoutId = reduce ? undefined : "lyrics-cover-title";
+    const coverTransition = { type: "spring", stiffness: 380, damping: 34 } as const;
     const motionPanel = isMotionOpen && (
-        <button
+        <motionLib.button
             type="button"
             onClick={() => setIsMotionOpen(false)}
             aria-label="Close animated cover"
             className="relative min-h-0 flex-1 overflow-hidden"
+            initial={reduce ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
         >
             <div className={cn("absolute inset-0 flex items-center justify-center overflow-hidden", isWideLayout ? "p-6" : "py-[0.5em]")}>
-                {motion ? (
+                <motionLib.div
+                    layoutId={coverLayoutId}
+                    transition={coverTransition}
+                    className={cn(
+                        "aspect-square overflow-hidden",
+                        isWideLayout
+                            ? "h-full max-h-[48rem] w-auto max-w-full rounded-2xl shadow-2xl shadow-black/50"
+                            : "h-full max-h-full w-auto max-w-full rounded-lg",
+                    )}
+                >
+                    <TrackArtwork
+                        artworkUrl={track?.artworkUrl}
+                        size={512}
+                        className="size-full"
+                        iconSize={64}
+                        loading="eager"
+                    />
+                </motionLib.div>
+                {motion && (
                     <MotionArtwork
                         motion={motion}
                         playing={isPlaying}
@@ -805,31 +830,21 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             setMotion(null);
                         }}
                         className={cn(
-                            "opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            "absolute inset-0 m-auto object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
                             isWideLayout
-                                ? "h-full w-full max-h-[48rem] max-w-[48rem] rounded-2xl object-contain"
-                                : "h-full w-full max-h-full max-w-full rounded-lg object-contain",
+                                ? "max-h-[48rem] max-w-full rounded-2xl"
+                                : "max-h-full max-w-full rounded-lg",
                         )}
-                    />
-                ) : (
-                    <TrackArtwork
-                        artworkUrl={track?.artworkUrl}
-                        size={512}
-                        className={cn(
-                            isWideLayout
-                                ? "aspect-square h-full max-h-[48rem] w-auto max-w-[48rem] rounded-2xl shadow-2xl shadow-black/50"
-                                : "aspect-square h-full max-h-full w-auto max-w-full rounded-lg",
-                        )}
-                        iconSize={64}
-                        loading="eager"
                     />
                 )}
             </div>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-background/90 to-transparent p-6 text-left">
-                <h2 className="text-xl font-bold text-foreground">{track?.title}</h2>
-                <p className="text-sm text-muted-foreground">{track?.artist}</p>
+                <motionLib.div layoutId={coverTitleLayoutId} transition={coverTransition}>
+                    <h2 className="text-xl font-bold text-foreground">{track?.title}</h2>
+                    <p className="text-sm text-muted-foreground">{track?.artist}</p>
+                </motionLib.div>
             </div>
-        </button>
+        </motionLib.button>
     );
 
     return (
@@ -913,9 +928,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             aria-label={`Show cover for ${track?.title ?? "this track"}`}
                             className="w-full cursor-pointer transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
-                            {wideArtwork}
+                            <motionLib.div layoutId={coverLayoutId} transition={coverTransition} className="w-full">
+                                {wideArtwork}
+                            </motionLib.div>
                         </button>
-                        <div className="min-w-0">
+                        <motionLib.div layoutId={coverTitleLayoutId} transition={coverTransition} className="min-w-0">
                             <h1 className="text-balance text-2xl font-bold leading-tight tracking-[-0.03em] text-foreground">
                                 {track?.title ?? "Nothing playing"}
                             </h1>
@@ -927,7 +944,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                     />
                                 </p>
                             )}
-                        </div>
+                        </motionLib.div>
                     </aside>
                 )}
 
@@ -941,9 +958,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             aria-label={`Show cover for ${track?.title ?? "this track"}`}
                             className="shrink-0 cursor-pointer transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
-                            {narrowArtwork}
+                            <motionLib.div layoutId={coverLayoutId} transition={coverTransition} className="shrink-0">
+                                {narrowArtwork}
+                            </motionLib.div>
                         </button>
-                        <div className="min-w-0 flex-1">
+                        <motionLib.div layoutId={coverTitleLayoutId} transition={coverTransition} className="min-w-0 flex-1">
                             <h1 className="truncate text-lg font-bold tracking-[-0.02em] text-foreground">
                                 {track?.title ?? "Nothing playing"}
                             </h1>
@@ -955,11 +974,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                     />
                                 </p>
                             )}
-                        </div>
+                        </motionLib.div>
                     </header>
                 )}
 
-                <div className="relative min-h-0 flex-1">
+                <motionLib.div layout transition={coverTransition} className="relative min-h-0 flex-1">
                     <div
                         ref={scrollerRef}
                         /* `relative` makes this the offsetParent the scroll maths measures against. */
@@ -1098,7 +1117,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             Back to current line
                         </button>
                     )}
-                </div>
+                </motionLib.div>
             </div>
 
             <footer className="relative flex h-10 shrink-0 items-center justify-between gap-3 px-6 pb-2 text-xs text-muted-foreground">
