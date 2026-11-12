@@ -57,6 +57,7 @@ import {
   unmetPrecondition,
 } from "./lyricsSources";
 import { pickLrcRedHit, type LrcRedSearchResponse } from "./lrcRed";
+import { parseTtmlTime } from "./ttmlTime";
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
 import { isTrackDownloaded } from "../../player/offlineStore";
@@ -5395,10 +5396,10 @@ export class YouTubeMusicDataSource extends DataSource {
     if (document.querySelector("parsererror")) return [];
 
     const lines = [...document.getElementsByTagName("p")].flatMap((node) => {
-      const startTimeSec = this.parseTtmlTime(node.getAttribute("begin") ?? node.getAttribute("start"));
+      const startTimeSec = parseTtmlTime(node.getAttribute("begin") ?? node.getAttribute("start"));
       if (startTimeSec === undefined) return [];
 
-      const endTimeSec = this.parseTtmlTime(node.getAttribute("end"));
+      const endTimeSec = parseTtmlTime(node.getAttribute("end"));
       const text = (node.textContent ?? "")
         .replace(/\s+/g, " ")
         .trim();
@@ -5416,39 +5417,6 @@ export class YouTubeMusicDataSource extends DataSource {
       ...line,
       endTimeSec: line.endTimeSec ?? lines[index + 1]?.startTimeSec,
     }));
-  }
-
-  private parseTtmlTime(value: string | null): number | undefined {
-    if (!value) return undefined;
-
-    const clockTime = value.match(/^(\d+):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?$/);
-    if (clockTime) {
-      const hours = Number(clockTime[1]);
-      const minutes = Number(clockTime[2]);
-      const seconds = Number(clockTime[3]);
-      const fraction = clockTime[4] ?? "0";
-      return hours * 3600 + minutes * 60 + seconds + Number(fraction.padEnd(3, "0").slice(0, 3)) / 1000;
-    }
-
-    const minuteTime = value.match(/^(\d+):(\d{2})(?:[.:](\d{1,3}))?$/);
-    if (minuteTime) {
-      const minutes = Number(minuteTime[1]);
-      const seconds = Number(minuteTime[2]);
-      const fraction = minuteTime[3] ?? "0";
-      return minutes * 60 + seconds + Number(fraction.padEnd(3, "0").slice(0, 3)) / 1000;
-    }
-
-    const offsetTime = value.match(/^([\d.]+)(h|m|s|ms)$/);
-    if (offsetTime) {
-      const amount = Number(offsetTime[1]);
-      if (!Number.isFinite(amount)) return undefined;
-      if (offsetTime[2] === "h") return amount * 3600;
-      if (offsetTime[2] === "m") return amount * 60;
-      if (offsetTime[2] === "s") return amount;
-      return amount / 1000;
-    }
-
-    return undefined;
   }
 
   private async refreshTrack(trackId: string, cacheKey: string): Promise<Track> {
