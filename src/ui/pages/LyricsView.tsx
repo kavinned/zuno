@@ -830,7 +830,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             setMotion(null);
                         }}
                         className={cn(
-                            "absolute inset-0 m-auto object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            "absolute inset-0 m-auto size-full object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
                             isWideLayout
                                 ? "max-h-[48rem] max-w-full rounded-2xl"
                                 : "max-h-full max-w-full rounded-lg",
