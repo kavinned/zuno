@@ -1,5 +1,13 @@
 import type { Lyrics, LyricsSourceAttempt } from "../types";
 
+/**
+ * Cache namespace for synced lyrics.
+ *
+ * Bump whenever the table's ranking changes. A cached winner is returned before any source
+ * runs, so a newly added higher-ranked source would otherwise be invisible on old tracks.
+ */
+export const LYRICS_CACHE_VERSION = "v5";
+
 export interface LyricsSource {
   id: string;
   label: string;

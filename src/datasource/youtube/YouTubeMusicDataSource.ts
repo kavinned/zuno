@@ -48,6 +48,7 @@ import type {
 } from "../types";
 import { collectArtworkCandidates, getVideoArtworkFallback, selectArtworkUrl } from "./artwork";
 import {
+  LYRICS_CACHE_VERSION,
   LYRICS_SOURCES,
   type LyricsSource,
   pickBestLyrics,
@@ -4835,6 +4836,8 @@ export class YouTubeMusicDataSource extends DataSource {
     }
 
     /*
+     * v5: Kugou joined the source table, so a transcript winner cached under v4 is stale.
+     *
      * v4: lrc.red joined the source table, so a winner cached under the old ranking is stale.
      *
      * v3: the cached shape now carries the per-source attempt log, and a v2 entry would
@@ -4843,7 +4846,7 @@ export class YouTubeMusicDataSource extends DataSource {
      * The preferred source is part of the key because it changes which source wins. Sharing
      * one key would mean changing the setting appears to do nothing until the cache expires.
      */
-    const cacheKey = `lyrics:synced:v4:${getPreferredLyricsSourceId()}:${track.id}`;
+    const cacheKey = `lyrics:synced:${LYRICS_CACHE_VERSION}:${getPreferredLyricsSourceId()}:${track.id}`;
     // A manual search (#89) skips the cache and overwrites it on a synced hit, so the fix sticks.
     if (!query) {
       const cached = await getCachedJson<Lyrics>(cacheKey);

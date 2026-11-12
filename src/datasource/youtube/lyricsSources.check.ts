@@ -19,6 +19,7 @@ function equal(actual: unknown, expected: unknown, message: string): void {
 }
 
 const {
+  LYRICS_CACHE_VERSION,
   LYRICS_SOURCES,
   pickBestLyrics,
   planLyricsWaves,
@@ -40,6 +41,7 @@ const synced = (count: number) => ({
 });
 
 equal(LYRICS_SOURCES.length, 8, "every source is in the table");
+equal(LYRICS_CACHE_VERSION, "v5", "the cache namespace was bumped when Kugou joined");
 check(
   rankOfSource("lrclib-exact") < rankOfSource("lrclib-search"),
   "a duration-exact match outranks a text search of the same corpus",
