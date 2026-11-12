@@ -225,6 +225,8 @@ export class PlayerController {
   private scrobbleTimerId: number | null = null;
   /** Polls position until the 10 s warm gate opens; see `warmNextTrack`. */
   private warmGateTimerId: ReturnType<typeof setInterval> | null = null;
+  /** Set by `dispose`; a late load continuation must not start a new poller. */
+  private disposed = false;
   private playbackSettingsTimerId: ReturnType<typeof setTimeout> | null = null;
   private transitioning = false;
 
@@ -1718,7 +1720,7 @@ export class PlayerController {
    * Failures are swallowed on purpose. This is an optimisation; if it does not land,
    * `ensureTrackLoaded` fetches normally and the listener waits exactly as long as before.
    */
-  private warmNextTrack(): void {
+  private warmNextTrack(skipMetadata = false): void {
     const next = this.peekNextTrack();
     if (!next) return;
 
@@ -1729,8 +1731,11 @@ export class PlayerController {
      * there is a wait no amount of warmed audio can hide — it was 775ms of a 918ms skip, with
      * the bytes already sitting ready. `getTrack` is stale-while-revalidate, so this only ever
      * costs the one request the skip would have made anyway, moved earlier.
+     *
+     * The poller passes `skipMetadata`: it is re-entering a warm whose metadata fetch already
+     * ran on the first pass, and repeating it would revalidate the same track every time.
      */
-    if (next.source === "youtube") {
+    if (!skipMetadata && next.source === "youtube") {
       void this.dataSource.getTrack(next.id).catch(() => {
         // Best effort. `playTrackById` still fetches it for real, and reports its own failure.
       });
@@ -1738,7 +1743,6 @@ export class PlayerController {
 
     if (!this.audioEngine.usesNativeAudio()) return;
     if (!this.dataSource.getStreamData) return;
-    if (this.warming !== null) return;
     /*
      * A track already on disk has no network wait to hide, which is all warming ever did on the
      * `<audio>` engine — so it stays excluded there.
@@ -1766,6 +1770,15 @@ export class PlayerController {
      * The call that hit the gate is not lost — the poller re-enters once playback crosses it.
      */
     if (!this.isWarmGateOpen()) {
+      this.startWarmGatePoll();
+      return;
+    }
+    /*
+     * A warm for another track is still in flight — the click that started it moved on.
+     * Wait for it to settle rather than dropping this call: without the poller the next
+     * track would never be warmed until the listener navigated again.
+     */
+    if (this.warming !== null) {
       this.startWarmGatePoll();
       return;
     }
@@ -1838,11 +1851,27 @@ export class PlayerController {
 
   /** Re-runs `warmNextTrack` once playback crosses the gate; one poller at a time. */
   private startWarmGatePoll(): void {
-    if (this.warmGateTimerId !== null) return;
+    if (this.disposed || this.warmGateTimerId !== null) return;
     this.warmGateTimerId = globalThis.setInterval(() => {
+      /*
+       * The poller lives only while a track is actually there to cross the gate. Paused is
+       * kept — resuming has to complete the warm — but idle and error have no position to
+       * wait for, and a disposed controller must not leave a timer behind.
+       */
+      if (
+        this.disposed
+        || !this.state.currentTrack
+        || this.state.status === "idle"
+        || this.state.status === "error"
+      ) {
+        this.stopWarmGatePoll();
+        return;
+      }
       if (!this.isWarmGateOpen()) return;
+      /* A foreign warm still running: retry next tick instead of dropping the call. */
+      if (this.warming !== null) return;
       this.stopWarmGatePoll();
-      this.warmNextTrack();
+      this.warmNextTrack(true);
     }, WARM_GATE_POLL_MS);
   }
 
@@ -2218,6 +2247,7 @@ export class PlayerController {
 
   dispose(): void {
     this.flushPlaybackSettings();
+    this.disposed = true;
     this.isTabActive = false;
     this.syncTransitionTicker();
     this.syncScrobbleTicker();
