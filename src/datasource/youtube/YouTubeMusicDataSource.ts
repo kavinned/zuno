@@ -56,6 +56,7 @@ import {
   sortAttempts,
   unmetPrecondition,
 } from "./lyricsSources";
+import { pickLrcRedHit, type LrcRedSearchResponse } from "./lrcRed";
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
 import { isTrackDownloaded } from "../../player/offlineStore";
@@ -4827,13 +4828,15 @@ export class YouTubeMusicDataSource extends DataSource {
     }
 
     /*
+     * v4: lrc.red joined the source table, so a winner cached under the old ranking is stale.
+     *
      * v3: the cached shape now carries the per-source attempt log, and a v2 entry would
      * leave the lyrics screen unable to say where its words came from.
      *
      * The preferred source is part of the key because it changes which source wins. Sharing
      * one key would mean changing the setting appears to do nothing until the cache expires.
      */
-    const cacheKey = `lyrics:synced:v3:${getPreferredLyricsSourceId()}:${track.id}`;
+    const cacheKey = `lyrics:synced:v4:${getPreferredLyricsSourceId()}:${track.id}`;
     // A manual search (#89) skips the cache and overwrites it on a synced hit, so the fix sticks.
     if (!query) {
       const cached = await getCachedJson<Lyrics>(cacheKey);
@@ -4917,6 +4920,7 @@ export class YouTubeMusicDataSource extends DataSource {
 
     const runners: Record<string, () => Promise<Lyrics | null>> = {
       "lrclib-exact": () => this.fetchLrcLibExactLyrics(track),
+      "lrc-red": () => this.fetchLrcRedLyrics(track),
       betterlyrics: () => this.fetchBetterLyrics(track),
       "lrclib-search": () => this.fetchLrcLibSearchLyrics(track),
       simpmusic: () => this.fetchSimpMusicLyrics(track),
@@ -5096,6 +5100,60 @@ export class YouTubeMusicDataSource extends DataSource {
         if (result) return result;
       } catch (error) {
         logInternalWarn("YouTubeMusicDataSource.getLyrics LRCLIB exact unavailable", {
+          trackId: track.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return null;
+  }
+
+  /*
+   * lrc.red is keyed by ISRC, which YouTube metadata does not carry, so the title/artist
+   * search is the only way in. Two queries at most: the track's own credits, then the
+   * cleaned title for uploads carrying an "(Official Video)"-style suffix.
+   */
+  private async fetchLrcRedLyrics(track: Track): Promise<LyricsProviderResult | null> {
+    if (!track.durationSec || track.durationSec <= 0) return null;
+
+    const first = this.getLyricsQueries(track)[0];
+    const cleanedTitle = this.cleanLyricsLookupText(track.title);
+    const queries = [first];
+    if (cleanedTitle && cleanedTitle !== first.title) {
+      queries.push({ ...first, title: cleanedTitle });
+    }
+
+    for (const query of queries) {
+      try {
+        const params = new URLSearchParams({ q: `${query.title} ${query.artist}`.trim() });
+        const searchResponse = await tauriFetch(`https://lrc.red/search.json?${params}`, {
+          headers: this.getLyricsRequestHeaders(),
+          timeoutMs: 2_500,
+        });
+        if (!searchResponse.ok) continue;
+
+        const body = await searchResponse.json() as LrcRedSearchResponse;
+        const hit = pickLrcRedHit(track, body.hits ?? []);
+        if (!hit?.isrc) continue;
+
+        const ttmlResponse = await tauriFetch(
+          `https://lrc.red/s/${encodeURIComponent(hit.isrc)}.ttml`,
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: 2_500 },
+        );
+        if (!ttmlResponse.ok) continue;
+
+        const lines = this.parseTtmlLyrics(await ttmlResponse.text());
+        if (lines.length === 0) continue;
+
+        logInternalInfo("YouTubeMusicDataSource.getLyrics lrc.red success", {
+          trackId: track.id,
+          isrc: hit.isrc,
+          lineCount: lines.length,
+        });
+        return { lines, timing: "synced", sourceLabel: "lrc.red" };
+      } catch (error) {
+        logInternalWarn("YouTubeMusicDataSource.getLyrics lrc.red unavailable", {
           trackId: track.id,
           error: error instanceof Error ? error.message : String(error),
         });
