@@ -74,6 +74,14 @@ export const LYRICS_SOURCES: LyricsSource[] = [
     note: "Line-synced and keyed to this exact video, but community entries are sometimes translations.",
   },
   {
+    id: "kugou",
+    label: "Kugou",
+    timeoutMs: 6_000,
+    wave: 2,
+    requiresDuration: true,
+    note: "Line-synced LRC from Kugou's catalogue, matched by artist, title and duration; community entries possible.",
+  },
+  {
     id: "youtube-transcript",
     label: "YouTube transcript",
     timeoutMs: 6_000,
