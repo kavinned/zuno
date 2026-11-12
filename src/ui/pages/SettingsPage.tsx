@@ -122,6 +122,10 @@ import {
   setLyricsFontScale,
   useLyricsFontScale,
 } from "../settings/lyricsFontScale";
+import {
+  setMotionArtworkEnabled,
+  useMotionArtworkEnabled,
+} from "../settings/motionArtwork";
 import { setZoom, useZoom, ZOOM_LEVELS } from "../settings/zoom";
 import {
   TRANSLATION_LANGUAGES,
@@ -657,6 +661,7 @@ export function SettingsPage({
   const youtubeScrobbling = useYouTubeScrobbling();
   const preferredLyricsSource = usePreferredLyricsSourceId();
   const lyricsFontScale = useLyricsFontScale();
+  const motionArtwork = useMotionArtworkEnabled();
   const zoom = useZoom();
   const lyricsTranslationLang = useLyricsTranslationLang();
   const madeForYouVisible = useMadeForYouVisible();
@@ -1736,6 +1741,13 @@ export function SettingsPage({
                 </Select>
               )}
             </SettingRow>
+
+            <SettingToggle
+              title="Animated album covers"
+              description="Apple Music's moving artwork on the lyrics screen, when available."
+              checked={motionArtwork}
+              onCheckedChange={setMotionArtworkEnabled}
+            />
 
 
             <SettingRow
