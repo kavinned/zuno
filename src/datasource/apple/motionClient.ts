@@ -44,18 +44,24 @@ export async function getTrackMotion(query: MotionQuery): Promise<AppleMotion | 
   const key = motionCacheKey(query.title, query.artist, query.album, query.durationSec);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const result = await lookup(query);
-  cache.set(key, result);
-  return result;
+  const { motion, cacheable } = await lookup(query);
+  if (cacheable) cache.set(key, motion);
+  return motion;
 }
 
-async function lookup(query: MotionQuery): Promise<AppleMotion | null> {
+interface LookupResult {
+  motion: AppleMotion | null;
+  /** False for transport/token failures: those may recover, so the next open retries. */
+  cacheable: boolean;
+}
+
+async function lookup(query: MotionQuery): Promise<LookupResult> {
   const storefront = storefrontFor(navigator.language);
   const album = query.album ?? null;
   const songs = await search(storefront, songTerm(query.title, query.artist, album), "songs");
-  if (songs === null) return null;
+  if (!songs.ok) return { motion: null, cacheable: false };
 
-  for (const song of ranked(songs, query.title, query.artist, album)) {
+  for (const song of ranked(songs.hits, query.title, query.artist, album)) {
     const attributes = obj(song.attributes);
     if (!attributes) continue;
     if (!matches(
@@ -75,51 +81,59 @@ async function lookup(query: MotionQuery): Promise<AppleMotion | null> {
     if (!durationAgrees(duration, query.durationSec)) continue;
 
     const inline = motionUrls(attributes.editorialVideo);
-    if (inline) return inline;
+    if (inline) return { motion: inline, cacheable: true };
 
     const albumId = albumIdOf(song);
     if (!albumId) continue;
     const fromAlbum = await albumMotion(storefront, albumId);
-    if (fromAlbum) return fromAlbum;
+    if (!fromAlbum.ok) return { motion: null, cacheable: false };
+    if (fromAlbum.motion) return { motion: fromAlbum.motion, cacheable: true };
   }
-  return null;
+  return { motion: null, cacheable: true };
 }
 
-async function albumMotion(storefront: string, albumId: string): Promise<AppleMotion | null> {
-  const body = await apiGet(`${storefront}/albums/${albumId}`, { extend: "editorialVideo" });
-  const data = body?.data;
+async function albumMotion(
+  storefront: string,
+  albumId: string,
+): Promise<{ ok: boolean; motion: AppleMotion | null }> {
+  const result = await apiGet(`${storefront}/albums/${albumId}`, { extend: "editorialVideo" });
+  if (!result.ok) return { ok: false, motion: null };
+  const data = result.body?.data;
   const album = Array.isArray(data) ? obj(data[0]) : null;
   const attributes = obj(album?.attributes);
-  if (!attributes) return null;
+  if (!attributes) return { ok: true, motion: null };
   // The song matched, but its album relationship can still point at a various-artists disc.
-  if (isCompilation(str(attributes.name))) return null;
-  return motionUrls(attributes.editorialVideo);
+  if (isCompilation(str(attributes.name))) return { ok: true, motion: null };
+  return { ok: true, motion: motionUrls(attributes.editorialVideo) };
 }
 
 async function search(
   storefront: string,
   term: string,
   types: "songs" | "albums",
-): Promise<Json[] | null> {
-  const body = await apiGet(`${storefront}/search`, {
+): Promise<{ ok: boolean; hits: Json[] }> {
+  const result = await apiGet(`${storefront}/search`, {
     term,
     types,
     limit: "10",
     extend: "editorialVideo",
     include: "albums",
   });
-  const data = obj(obj(body?.results)?.[types])?.data;
-  if (!Array.isArray(data)) return null;
-  return data.map((entry) => obj(entry)).filter((entry): entry is Json => entry !== null);
+  if (!result.ok) return { ok: false, hits: [] };
+  const data = obj(obj(result.body?.results)?.[types])?.data;
+  if (!Array.isArray(data)) return { ok: false, hits: [] };
+  return { ok: true, hits: data.map((entry) => obj(entry)).filter((entry): entry is Json => entry !== null) };
 }
+
+type ApiResult = { ok: true; body: Json | null } | { ok: false };
 
 async function apiGet(
   path: string,
   params: Record<string, string>,
   allowTokenRetry = true,
-): Promise<Json | null> {
+): Promise<ApiResult> {
   const token = await getToken();
-  if (token === null) return null;
+  if (token === null) return { ok: false };
 
   const url = new URL(`${API}/${path}`);
   for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
@@ -139,10 +153,10 @@ async function apiGet(
       tokenRetryAt = 0;
       return apiGet(path, params, false);
     }
-    if (!response.ok) return null;
-    return obj(await response.json());
+    if (!response.ok) return { ok: false };
+    return { ok: true, body: obj(await response.json()) };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 

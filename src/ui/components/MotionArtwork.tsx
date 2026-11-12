@@ -76,18 +76,22 @@ export function MotionArtwork({
     };
 
     const onError = () => fail();
-    const onPlaying = () => video.setAttribute("data-ready", "");
+    /* The first decoded frame, not the first play: opening the split while audio is paused must
+       still show the clip's frame rather than an empty slot. */
+    const onReady = () => video.setAttribute("data-ready", "");
 
     video.removeAttribute("data-ready");
     video.addEventListener("error", onError);
-    video.addEventListener("playing", onPlaying);
+    video.addEventListener("loadeddata", onReady);
+    video.addEventListener("playing", onReady);
     void attach(motion.url);
 
     return () => {
       disposed = true;
       hls?.destroy();
       video.removeEventListener("error", onError);
-      video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("loadeddata", onReady);
+      video.removeEventListener("playing", onReady);
       video.removeAttribute("src");
       video.removeAttribute("data-ready");
       video.load();
