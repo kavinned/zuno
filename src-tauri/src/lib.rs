@@ -4432,6 +4432,12 @@ async fn fill_media_buffer(
     // The wait for the permit above is where a superseded fill most likely spent its time —
     // recheck now, before spending a request on a track that moved on while this was queued.
     if load_superseded(slot) {
+        /*
+         * Mark the buffer unhealthy as well as abandoning it. A standby deck can already be
+         * reported loaded by the time its fill is superseded, and the health probe is the only
+         * thing that stops it being swapped in with only a head chunk on disk.
+         */
+        fail(&buffer);
         eprintln!(
             "[internal][tauri][info] fill_media_buffer superseded before start track_id={}",
             track_id
@@ -4725,6 +4731,11 @@ async fn fill_media_buffer(
                 // failed. The whole-file fallback below is the expensive part of this function —
                 // not worth starting for a track nobody is playing or preloading any more.
                 if load_superseded(slot) {
+                    /*
+                     * Same reason as the before-start check: the deck may already report loaded,
+                     * and the remaining bytes are no longer coming.
+                     */
+                    fail(&buffer);
                     eprintln!(
                         "[internal][tauri][info] fill_media_buffer superseded, skipping fallback track_id={}",
                         track_id
@@ -5093,8 +5104,21 @@ async fn native_audio_load(
     standby: Option<bool>,
     loudness_db: Option<f32>,
 ) -> Result<f64, CommandError> {
+    let standby = standby.unwrap_or(false);
+    if !standby {
+        /*
+         * A foreground load must not queue behind a warm preload's fill.
+         *
+         * `PLAYBACK_FILL_LOCK` is process-wide and the warm preload starts first, so it can hold
+         * the permit for the whole next-track download while the decoder blocks on this load's
+         * head chunk — measured as a 9.4 s load on a track whose bytes were otherwise ready.
+         * Superseding the standby fill makes it release the permit at its next chunk check; the
+         * next track warms again once this foreground load lands.
+         */
+        supersede_load(1);
+    }
     let NativeAudioReader { reader, mime_type, buffer } =
-        open_native_audio_reader(&app, &track_id, source, standby.unwrap_or(false)).await?;
+        open_native_audio_reader(&app, &track_id, source, standby).await?;
     let started_at = Instant::now();
 
     let decoded = tauri::async_runtime::spawn_blocking(move || {
@@ -5168,7 +5192,7 @@ async fn native_audio_load(
         source: decoded,
         fallback_duration_sec: duration_sec.unwrap_or(0.0),
         decoded_duration_sec: decoded_duration,
-        standby: standby.unwrap_or(false),
+        standby,
         health,
         reply,
     })
@@ -5178,7 +5202,7 @@ async fn native_audio_load(
     eprintln!(
         "[internal][tauri][info] native_audio_load track_id={} standby={} duration_sec={} decode_ms={}",
         track_id,
-        standby.unwrap_or(false),
+        standby,
         duration,
         started_at.elapsed().as_millis()
     );
