@@ -37,7 +37,7 @@ function normalizeAlbum(value: string | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function splitNames(value: string | undefined): string[] {
+export function splitNames(value: string | undefined): string[] {
   if (!value) return [];
   return [...new Set(value.split(ARTIST_SPLIT).map(normalize).filter(Boolean))];
 }
@@ -49,7 +49,7 @@ function sameSet(left: string[], right: string[]): boolean {
 }
 
 /** The side's own markers plus the album's, so a karaoke or instrumental album is a different take. */
-function versionMarkersFor(parts: ParsedTrackTitle, album: string | undefined): string[] {
+export function versionMarkersFor(parts: ParsedTrackTitle, album: string | undefined): string[] {
   const markers = [...parts.versionMarkers];
   const normalizedAlbum = normalize(album ?? "");
   if (normalizedAlbum.includes("instrumental")) markers.push("instrumental");
@@ -62,7 +62,7 @@ function hasNonLatinLetter(text: string): boolean {
   return letters.length > 0 && !/^\p{Script=Latin}+$/u.test(letters);
 }
 
-function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): boolean {
+export function titleCoreMatches(target: ParsedTrackTitle, row: ParsedTrackTitle): boolean {
   const targetCore = target.core;
   const rowCore = row.core;
   if (targetCore.length > 0 && targetCore === rowCore) return true;
@@ -130,7 +130,7 @@ function artistEvidence(target: MatchTarget, row: AddonSearchRow): ArtistEvidenc
  * carries the simplified ones ("薛之谦"). Two shared letters out of a short name is far more
  * than unrelated names share; tight duration still gates the match.
  */
-function sharesNonLatinGlyphs(left: string, right: string): boolean {
+export function sharesNonLatinGlyphs(left: string, right: string): boolean {
   if (!hasNonLatinLetter(left) || !hasNonLatinLetter(right)) return false;
   const a = new Set(left.replace(/[^\p{L}]/gu, ""));
   const b = new Set(right.replace(/[^\p{L}]/gu, ""));
