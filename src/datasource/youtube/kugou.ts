@@ -29,6 +29,13 @@ export interface KugouDownloadResponse {
   info?: string;
 }
 
+/** A download response is usable only when it reports OK and carries a payload. */
+export function isUsableKugouDownload(
+  body: KugouDownloadResponse,
+): body is KugouDownloadResponse & { status: 200; content: string } {
+  return body.status === 200 && typeof body.content === "string" && body.content.length > 0;
+}
+
 /** The track fields the candidate selector needs; `Track` satisfies this structurally. */
 export interface KugouTarget {
   title: string;
@@ -82,7 +89,8 @@ export function pickKugouCandidate(
 
     const candidateParts = parseTrackTitle(candidate.song);
     if (!titleCoreMatches(targetParts, candidateParts)) return false;
-    if (!sameSet(targetMarkers, versionMarkersFor(candidateParts, target.album))) {
+    // Kugou candidates carry no album, so only the candidate's own title markers apply.
+    if (!sameSet(targetMarkers, versionMarkersFor(candidateParts, undefined))) {
       return false;
     }
 

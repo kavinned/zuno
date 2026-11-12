@@ -1,5 +1,6 @@
 import {
   decodeKugouLrc,
+  isUsableKugouDownload,
   pickKugouCandidate,
   type KugouCandidate,
   type KugouTarget,
@@ -44,6 +45,11 @@ equal(
   "a live version is rejected",
 );
 equal(
+  pickKugouCandidate(target({ album: "Instrumental Covers Vol. 2" }), [candidate()]),
+  undefined,
+  "a vocal candidate is rejected for an instrumental album",
+);
+equal(
   pickKugouCandidate(target(), [candidate({ duration: 191_000 })]),
   undefined,
   "a candidate more than three seconds away is rejected",
@@ -74,6 +80,14 @@ equal(
   "a track with no duration cannot be matched",
 );
 equal(pickKugouCandidate(target(), []), undefined, "no candidates is undefined, not a crash");
+
+check(
+  isUsableKugouDownload({ status: 200, content: "abc" }),
+  "an ok response with content is usable",
+);
+equal(isUsableKugouDownload({ status: 403, content: "abc" }), false, "a 403 body is a miss");
+equal(isUsableKugouDownload({ status: 200, content: "" }), false, "empty content is a miss");
+equal(isUsableKugouDownload({ status: 200 }), false, "missing content is a miss");
 
 const lrc = "﻿[00:01.00]Hello\r\n[00:02.00]World\r\n";
 const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(lrc)));

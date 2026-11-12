@@ -14,8 +14,8 @@ export interface LyricsSource {
   timeoutMs: number;
   /**
    * Which round this source runs in. Everything in a wave is raced in parallel; wave 2 only
-   * runs if wave 1 came back empty, because its two sources are expensive YouTube calls and
-   * a synced hit makes them pointless.
+   * runs if wave 1 came back empty. Its sources are costlier: two expensive YouTube calls
+   * and Kugou's third-party request.
    */
   wave: 1 | 2;
   /**

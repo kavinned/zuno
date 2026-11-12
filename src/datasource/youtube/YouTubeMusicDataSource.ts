@@ -60,6 +60,7 @@ import {
 import { pickLrcRedHit, type LrcRedSearchResponse } from "./lrcRed";
 import {
   decodeKugouLrc,
+  isUsableKugouDownload,
   pickKugouCandidate,
   type KugouDownloadResponse,
   type KugouSearchResponse,
@@ -5296,8 +5297,14 @@ export class YouTubeMusicDataSource extends DataSource {
       queries.push({ ...first, title: cleanedTitle });
     }
     const durationMs = Math.round(track.durationSec * 1000);
+    // The source table caps this at 6s; keep both queries inside a shared 5.5s deadline
+    // so the fallback is not abandoned by the outer race.
+    const deadline = Date.now() + 5_500;
 
     for (const query of queries) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+
       try {
         const searchParams = new URLSearchParams({
           ver: "1",
@@ -5308,7 +5315,7 @@ export class YouTubeMusicDataSource extends DataSource {
         });
         const searchResponse = await tauriFetch(
           `https://lyrics.kugou.com/search?${searchParams}`,
-          { headers: this.getLyricsRequestHeaders(), timeoutMs: 3_500 },
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: Math.min(3_500, remaining) },
         );
         if (!searchResponse.ok) continue;
 
@@ -5316,6 +5323,9 @@ export class YouTubeMusicDataSource extends DataSource {
         if (searchBody.status !== 200) continue;
         const candidate = pickKugouCandidate(track, searchBody.candidates ?? []);
         if (!candidate) continue;
+
+        const downloadRemaining = deadline - Date.now();
+        if (downloadRemaining <= 0) break;
 
         const downloadParams = new URLSearchParams({
           ver: "1",
@@ -5327,12 +5337,12 @@ export class YouTubeMusicDataSource extends DataSource {
         });
         const downloadResponse = await tauriFetch(
           `https://lyrics.kugou.com/download?${downloadParams}`,
-          { headers: this.getLyricsRequestHeaders(), timeoutMs: 2_000 },
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: Math.min(2_000, downloadRemaining) },
         );
         if (!downloadResponse.ok) continue;
 
         const downloadBody = await downloadResponse.json() as KugouDownloadResponse;
-        if (downloadBody.status !== 200 || !downloadBody.content) continue;
+        if (!isUsableKugouDownload(downloadBody)) continue;
 
         const lines = this.parseSyncedLyrics(decodeKugouLrc(downloadBody.content));
         if (lines.length === 0) continue;
