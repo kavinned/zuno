@@ -3,7 +3,9 @@ export {};
 import {
   isWarmingTrack,
   joinWarm,
+  shouldStartWarmAudio,
   shouldTearDownBeforePlay,
+  WARM_GATE_SEC,
   type WarmSlot,
 } from "./warmHandoff";
 
@@ -39,5 +41,12 @@ stalled.resolve();
 
 check(await joinWarm(slot, "b", 1000), "a settled warm joins");
 check((await joinWarm(slot, "a", 10)) === false, "a warm for another track is not joined");
+
+check(!shouldStartWarmAudio(null, null, 30), "no loaded track and no current track never warms");
+check(!shouldStartWarmAudio("a", "a", WARM_GATE_SEC - 0.01), "just under the gate does not warm");
+check(shouldStartWarmAudio("a", "a", WARM_GATE_SEC), "the gate opens exactly at 10s");
+check(shouldStartWarmAudio("a", "a", 300), "a seek past the gate warms immediately");
+check(!shouldStartWarmAudio("a", "b", 30), "a stale loaded id does not warm the new track");
+check(!shouldStartWarmAudio(null, "b", 30), "nothing loaded yet does not warm");
 
 console.log("warmHandoff.check.ts passed");

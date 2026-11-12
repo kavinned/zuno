@@ -10,6 +10,7 @@ import { recordPlay } from "./playHistory";
 import {
   isWarmingTrack,
   joinWarm,
+  shouldStartWarmAudio,
   shouldTearDownBeforePlay,
   type WarmSlot,
 } from "./warmHandoff";
@@ -56,6 +57,9 @@ const PRELOAD_LEAD_SEC = 20;
  * whole track was heard is accepted and counted as nothing.
  */
 const SCROBBLE_TICK_MS = 30_000;
+
+/** How often the warm gate re-reads playback position. */
+const WARM_GATE_POLL_MS = 1000;
 /** How long after the last volume change the settings are written. See setVolume. */
 const PLAYBACK_SETTINGS_PERSIST_MS = 400;
 /**
@@ -219,6 +223,8 @@ export class PlayerController {
   private gaplessQueued = false;
   private stopTransitionTicker: (() => void) | null = null;
   private scrobbleTimerId: number | null = null;
+  /** Polls position until the 10 s warm gate opens; see `warmNextTrack`. */
+  private warmGateTimerId: ReturnType<typeof setInterval> | null = null;
   private playbackSettingsTimerId: ReturnType<typeof setTimeout> | null = null;
   private transitioning = false;
 
@@ -1754,6 +1760,16 @@ export class PlayerController {
     }
     if (this.warmedStream?.trackId === next.id) return;
 
+    /*
+     * Audio waits until the current track has played far enough to be worth following. The
+     * metadata fetch above already ran: it is the request the next click would make anyway.
+     * The call that hit the gate is not lost — the poller re-enters once playback crosses it.
+     */
+    if (!this.isWarmGateOpen()) {
+      this.startWarmGatePoll();
+      return;
+    }
+
     const getStreamData = this.dataSource.getStreamData.bind(this.dataSource);
     const generation = ++this.warmGeneration;
     const engine = getAudioEngineMode();
@@ -1810,6 +1826,29 @@ export class PlayerController {
     if (this.warming?.trackId !== trackId) return;
     this.warming = null;
     this.warmGeneration += 1;
+  }
+
+  private isWarmGateOpen(): boolean {
+    return shouldStartWarmAudio(
+      this.loadedTrackId,
+      this.state.currentTrack?.id ?? null,
+      this.audioEngine.getCurrentTime(),
+    );
+  }
+
+  /** Re-runs `warmNextTrack` once playback crosses the gate; one poller at a time. */
+  private startWarmGatePoll(): void {
+    if (this.warmGateTimerId !== null) return;
+    this.warmGateTimerId = globalThis.setInterval(() => {
+      if (!this.isWarmGateOpen()) return;
+      this.stopWarmGatePoll();
+      this.warmNextTrack();
+    }, WARM_GATE_POLL_MS);
+  }
+
+  private stopWarmGatePoll(): void {
+    if (this.warmGateTimerId !== null) globalThis.clearInterval(this.warmGateTimerId);
+    this.warmGateTimerId = null;
   }
 
   /** Whether a track can be handed to a standby deck rather than loaded on the spot. */
@@ -2182,6 +2221,7 @@ export class PlayerController {
     this.isTabActive = false;
     this.syncTransitionTicker();
     this.syncScrobbleTicker();
+    this.stopWarmGatePoll();
     this.audioEngine.setOnEnded(null);
     this.audioEngine.dispose();
     this.listeners.clear();
