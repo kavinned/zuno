@@ -1,0 +1,186 @@
+/**
+ * Apple Music catalog lookups for motion artwork.
+ *
+ * Everything here degrades to `null`: a missing token, a dead CDN, an unrecognized response or
+ * a failed match must leave the lyrics screen exactly as it was. Results — including misses —
+ * are cached for the session so skipping back and forth never repeats a lookup.
+ */
+import { tauriFetch } from "../youtube/tauriFetch";
+import {
+  albumIdOf,
+  durationAgrees,
+  isCompilation,
+  matches,
+  motionCacheKey,
+  motionUrls,
+  obj,
+  ranked,
+  scriptPathFromPage,
+  songTerm,
+  storefrontFor,
+  str,
+  webPlayerTokenFromScript,
+  type AppleMotion,
+  type Json,
+} from "./motion";
+
+export interface MotionQuery {
+  title: string;
+  artist: string;
+  album?: string | null;
+  durationSec?: number | null;
+}
+
+const API = "https://amp-api.music.apple.com/v1/catalog";
+const MUSIC_ORIGIN = "https://music.apple.com";
+const TOKEN_RETRY_MS = 30 * 60_000;
+const REQUEST_TIMEOUT_MS = 15_000;
+
+const cache = new Map<string, AppleMotion | null>();
+let tokenPromise: Promise<string | null> | null = null;
+let tokenRetryAt = 0;
+
+export async function getTrackMotion(query: MotionQuery): Promise<AppleMotion | null> {
+  const key = motionCacheKey(query.title, query.artist, query.album, query.durationSec);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const result = await lookup(query);
+  cache.set(key, result);
+  return result;
+}
+
+async function lookup(query: MotionQuery): Promise<AppleMotion | null> {
+  const storefront = storefrontFor(navigator.language);
+  const album = query.album ?? null;
+  const songs = await search(storefront, songTerm(query.title, query.artist, album), "songs");
+  if (songs === null) return null;
+
+  for (const song of ranked(songs, query.title, query.artist, album)) {
+    const attributes = obj(song.attributes);
+    if (!attributes) continue;
+    if (!matches(
+      {
+        title: str(attributes.name) || null,
+        artist: str(attributes.artistName) || null,
+        album: str(attributes.albumName) || null,
+      },
+      query.title,
+      query.artist,
+      album,
+    )) continue;
+
+    const duration = typeof attributes.durationInMillis === "number"
+      ? attributes.durationInMillis
+      : null;
+    if (!durationAgrees(duration, query.durationSec)) continue;
+
+    const inline = motionUrls(attributes.editorialVideo);
+    if (inline) return inline;
+
+    const albumId = albumIdOf(song);
+    if (!albumId) continue;
+    const fromAlbum = await albumMotion(storefront, albumId);
+    if (fromAlbum) return fromAlbum;
+  }
+  return null;
+}
+
+async function albumMotion(storefront: string, albumId: string): Promise<AppleMotion | null> {
+  const body = await apiGet(`${storefront}/albums/${albumId}`, { extend: "editorialVideo" });
+  const data = body?.data;
+  const album = Array.isArray(data) ? obj(data[0]) : null;
+  const attributes = obj(album?.attributes);
+  if (!attributes) return null;
+  // The song matched, but its album relationship can still point at a various-artists disc.
+  if (isCompilation(str(attributes.name))) return null;
+  return motionUrls(attributes.editorialVideo);
+}
+
+async function search(
+  storefront: string,
+  term: string,
+  types: "songs" | "albums",
+): Promise<Json[] | null> {
+  const body = await apiGet(`${storefront}/search`, {
+    term,
+    types,
+    limit: "10",
+    extend: "editorialVideo",
+    include: "albums",
+  });
+  const data = obj(obj(body?.results)?.[types])?.data;
+  if (!Array.isArray(data)) return null;
+  return data.map((entry) => obj(entry)).filter((entry): entry is Json => entry !== null);
+}
+
+async function apiGet(
+  path: string,
+  params: Record<string, string>,
+  allowTokenRetry = true,
+): Promise<Json | null> {
+  const token = await getToken();
+  if (token === null) return null;
+
+  const url = new URL(`${API}/${path}`);
+  for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
+
+  try {
+    const response = await tauriFetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Origin: MUSIC_ORIGIN,
+        Referer: `${MUSIC_ORIGIN}/`,
+      },
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+    if (response.status === 401 && allowTokenRetry) {
+      // The bundle rotates its token: drop this one and scrape a fresh one exactly once.
+      tokenPromise = null;
+      tokenRetryAt = 0;
+      return apiGet(path, params, false);
+    }
+    if (!response.ok) return null;
+    return obj(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+async function getToken(): Promise<string | null> {
+  if (tokenPromise !== null) return tokenPromise;
+  if (Date.now() < tokenRetryAt) return null;
+
+  tokenPromise = scrapeToken();
+  const token = await tokenPromise;
+  if (token === null) {
+    tokenPromise = null;
+    tokenRetryAt = Date.now() + TOKEN_RETRY_MS;
+  }
+  return token;
+}
+
+/**
+ * The anonymous token the web player itself uses.
+ *
+ * A developer token would be the documented route, but it is not available to an app with no
+ * developer account; the bundle's token is what the player ships to every visitor anyway.
+ */
+async function scrapeToken(): Promise<string | null> {
+  const page = await fetchText(`${MUSIC_ORIGIN}/us/browse`);
+  const scriptPath = page === null ? null : scriptPathFromPage(page);
+  if (scriptPath === null) return null;
+  const script = await fetchText(`${MUSIC_ORIGIN}${scriptPath}`);
+  return script === null ? null : webPlayerTokenFromScript(script);
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  try {
+    const response = await tauriFetch(url, {
+      headers: { Origin: MUSIC_ORIGIN, Referer: `${MUSIC_ORIGIN}/` },
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+    return response.ok ? await response.text() : null;
+  } catch {
+    return null;
+  }
+}
