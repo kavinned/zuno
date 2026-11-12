@@ -57,6 +57,12 @@ import {
   unmetPrecondition,
 } from "./lyricsSources";
 import { pickLrcRedHit, type LrcRedSearchResponse } from "./lrcRed";
+import {
+  decodeKugouLrc,
+  pickKugouCandidate,
+  type KugouDownloadResponse,
+  type KugouSearchResponse,
+} from "./kugou";
 import { parseTtmlTime } from "./ttmlTime";
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
@@ -4925,6 +4931,7 @@ export class YouTubeMusicDataSource extends DataSource {
       betterlyrics: () => this.fetchBetterLyrics(track),
       "lrclib-search": () => this.fetchLrcLibSearchLyrics(track),
       simpmusic: () => this.fetchSimpMusicLyrics(track),
+      kugou: () => this.fetchKugouLyrics(track),
       "youtube-transcript": () => this.fetchYouTubeTranscriptLyrics(track),
       "youtube-music": () => this.fetchYouTubeMusicLyrics(track),
     };
@@ -5270,6 +5277,78 @@ export class YouTubeMusicDataSource extends DataSource {
       lineCount: lines.length,
     });
     return { lines, timing: "synced", sourceLabel: "SimpMusic" };
+  }
+
+  /*
+   * Kugou's lyric search wants "artist - title" plus a duration; its download transcodes
+   * KRC to plain LRC on request. Two queries at most, same as lrc.red.
+   */
+  private async fetchKugouLyrics(track: Track): Promise<LyricsProviderResult | null> {
+    if (!track.durationSec || track.durationSec <= 0) return null;
+
+    const first = this.getLyricsQueries(track)[0];
+    const cleanedTitle = this.cleanLyricsLookupText(track.title);
+    const queries = [first];
+    if (cleanedTitle && cleanedTitle !== first.title) {
+      queries.push({ ...first, title: cleanedTitle });
+    }
+    const durationMs = Math.round(track.durationSec * 1000);
+
+    for (const query of queries) {
+      try {
+        const searchParams = new URLSearchParams({
+          ver: "1",
+          man: "yes",
+          client: "pc",
+          keyword: `${query.artist} - ${query.title}`,
+          duration: String(durationMs),
+        });
+        const searchResponse = await tauriFetch(
+          `https://lyrics.kugou.com/search?${searchParams}`,
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: 3_500 },
+        );
+        if (!searchResponse.ok) continue;
+
+        const searchBody = await searchResponse.json() as KugouSearchResponse;
+        if (searchBody.status !== 200) continue;
+        const candidate = pickKugouCandidate(track, searchBody.candidates ?? []);
+        if (!candidate) continue;
+
+        const downloadParams = new URLSearchParams({
+          ver: "1",
+          id: candidate.id,
+          accesskey: candidate.accesskey,
+          client: "pc",
+          fmt: "lrc",
+          charset: "utf8",
+        });
+        const downloadResponse = await tauriFetch(
+          `https://lyrics.kugou.com/download?${downloadParams}`,
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: 2_000 },
+        );
+        if (!downloadResponse.ok) continue;
+
+        const downloadBody = await downloadResponse.json() as KugouDownloadResponse;
+        if (downloadBody.status !== 200 || !downloadBody.content) continue;
+
+        const lines = this.parseSyncedLyrics(decodeKugouLrc(downloadBody.content));
+        if (lines.length === 0) continue;
+
+        logInternalInfo("YouTubeMusicDataSource.getLyrics Kugou success", {
+          trackId: track.id,
+          id: candidate.id,
+          lineCount: lines.length,
+        });
+        return { lines, timing: "synced", sourceLabel: "Kugou" };
+      } catch (error) {
+        logInternalWarn("YouTubeMusicDataSource.getLyrics Kugou unavailable", {
+          trackId: track.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return null;
   }
 
   private toLrcLibLyrics(
