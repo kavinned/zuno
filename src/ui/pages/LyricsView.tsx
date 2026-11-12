@@ -29,6 +29,7 @@ import type {
 } from "../../datasource/types";
 import { LYRICS_SOURCES } from "../../datasource/youtube/lyricsSources";
 import { FloatingPanel } from "../components/FloatingPanel";
+import { ExternalLinkButton } from "../components/ExternalLinkButton";
 import { logInternalWarn } from "../../internal/logging";
 import {
     playerController,
@@ -699,6 +700,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     };
 
     const sourceLabel = lyrics?.sourceLabel;
+    const activeSource = lyrics?.sourceId
+        ? LYRICS_SOURCES.find((source) => source.id === lyrics.sourceId)
+        : undefined;
     const timingLabel = hasLines ? (isSynced ? "Synced" : "Unsynced") : null;
 
     const translationActive =
@@ -1011,6 +1015,14 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         sourceLabel && (
                             <span className="truncate">via {sourceLabel}</span>
                         )
+                    )}
+                    {activeSource?.url && (
+                        <ExternalLinkButton
+                            variant="quiet"
+                            label={activeSource.label}
+                            url={activeSource.url}
+                            className="shrink-0 px-0 text-xs"
+                        />
                     )}
                     {cacheBadgeLabel && (
                         <span
