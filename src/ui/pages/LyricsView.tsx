@@ -39,7 +39,10 @@ import {
 import { playerUIStore, usePlayerUIState } from "../stores/playerUIStore";
 import { ArtistLinks } from "../components/ArtistLinks";
 import { TrackArtwork } from "../components/TrackArtwork";
-import { CoverButton } from "../components/CoverButton";
+import { MotionArtwork } from "../components/MotionArtwork";
+import { getTrackMotion } from "../../datasource/apple/motionClient";
+import type { AppleMotion } from "../../datasource/apple/motion";
+import { useMotionArtworkEnabled } from "../settings/motionArtwork";
 import { BlurredArtwork } from "../components/BlurredArtwork";
 import { setAmbientArtwork } from "../stores/ambientArtworkStore";
 import {
@@ -173,6 +176,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const [isFollowPaused, setIsFollowPaused] = useState(false);
     const [focusIndex, setFocusIndex] = useState<number | null>(null);
     const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+    const motionEnabled = useMotionArtworkEnabled();
+    const [motion, setMotion] = useState<AppleMotion | null>(null);
+    const [isMotionOpen, setIsMotionOpen] = useState(false);
 
     const scrollerRef = useRef<HTMLDivElement>(null);
     const lineRefs = useRef<Array<HTMLElement | null>>([]);
@@ -231,6 +237,38 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             window.removeEventListener("offline", update);
         };
     }, []);
+
+    /*
+     * One lookup per track while the view is open: the cover click stays instant. The cancelled
+     * flag is what stops a late answer for the previous track from opening a clip on the new one.
+     */
+    useEffect(() => {
+        setMotion(null);
+        if (!motionEnabled || reduce || !isOnline || !track) {
+            setIsMotionOpen(false);
+            return;
+        }
+
+        let cancelled = false;
+        void getTrackMotion({
+            title: track.title,
+            artist: track.artist,
+            album: track.album ?? null,
+            durationSec: track.durationSec ?? null,
+        })
+            .then((result) => {
+                if (!cancelled) setMotion(result);
+            })
+            .catch(() => {
+                // Client failures already resolve null; this is belt-and-braces.
+            });
+
+        return () => {
+            cancelled = true;
+        };
+        // Track fields are keyed by track.id; reading them here must not refetch per render.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [track?.id, motionEnabled, reduce, isOnline]);
 
     useEffect(() => {
         let cancelled = false;
@@ -732,6 +770,69 @@ export function LyricsView({ onClose }: LyricsViewProps) {
           ? "Lyrics could not be loaded."
           : "No lyrics found for this song.";
 
+    const wideArtwork = (
+        <TrackArtwork
+            artworkUrl={track?.artworkUrl}
+            size={288}
+            className="aspect-square w-full   shadow-2xl shadow-black/50"
+            iconSize={40}
+            loading="eager"
+        />
+    );
+    const narrowArtwork = (
+        <TrackArtwork
+            artworkUrl={track?.artworkUrl}
+            size={56}
+            className="size-14   shadow-lg shadow-black/30"
+            iconSize={20}
+            loading="eager"
+        />
+    );
+    const motionPanel = isMotionOpen && (
+        <button
+            type="button"
+            onClick={() => setIsMotionOpen(false)}
+            aria-label="Close animated cover"
+            className="relative min-h-0 flex-1 overflow-hidden"
+        >
+            <div className={cn("absolute inset-0 grid place-items-center", isWideLayout && "p-6")}>
+                {motion ? (
+                    <MotionArtwork
+                        motion={motion}
+                        playing={isPlaying}
+                        onUnavailable={() => {
+                            setIsMotionOpen(false);
+                            setMotion(null);
+                        }}
+                        className={cn(
+                            "h-full w-full object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            isWideLayout
+                                ? "max-h-[48rem] max-w-[48rem] rounded-2xl"
+                                : "max-h-[16rem] max-w-[16rem]",
+                        )}
+                    />
+                ) : (
+                    <TrackArtwork
+                        artworkUrl={track?.artworkUrl}
+                        size={512}
+                        className={cn(
+                            "aspect-square h-full max-h-full w-auto max-w-full shadow-2xl shadow-black/50",
+                            isWideLayout
+                                ? "max-h-[48rem] max-w-[48rem] rounded-2xl"
+                                : "max-h-[16rem] max-w-[16rem]",
+                        )}
+                        iconSize={64}
+                        loading="eager"
+                    />
+                )}
+            </div>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-background/90 to-transparent p-6 text-left">
+                <h2 className="text-xl font-bold text-foreground">{track?.title}</h2>
+                <p className="text-sm text-muted-foreground">{track?.artist}</p>
+            </div>
+        </button>
+    );
+
     return (
         <section
             ref={containerRef}
@@ -801,19 +902,23 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                 </button>
             </div>
 
-            <div className="relative flex min-h-0 flex-1 flex-col @4xl/lyrics:flex-row">
+            <div className="relative flex min-h-0 flex-1 flex-col">
+                {isMotionOpen && !isWideLayout && motionPanel}
+
+                <div className="relative flex min-h-0 flex-1 flex-col @4xl/lyrics:flex-row">
+                {isMotionOpen && isWideLayout && motionPanel}
                 {/* Wide enough for two columns: the song gets a poster, the lyrics get the rest. */}
-                {isWideLayout && (
+                {isWideLayout && !isMotionOpen && (
                     <aside className="hidden shrink-0 flex-col gap-6 px-8 py-8 @4xl/lyrics:flex @4xl/lyrics:w-[19rem] @6xl/lyrics:w-[22rem]">
-                        <CoverButton artworkUrl={track?.artworkUrl} label={track?.title ?? "this track"} className="w-full">
-                            <TrackArtwork
-                                artworkUrl={track?.artworkUrl}
-                                size={288}
-                                className="aspect-square w-full   shadow-2xl shadow-black/50"
-                                iconSize={40}
-                                loading="eager"
-                            />
-                        </CoverButton>
+                        <button
+                            type="button"
+                            onClick={() => setIsMotionOpen(true)}
+                            aria-pressed={isMotionOpen}
+                            aria-label={`Show cover for ${track?.title ?? "this track"}`}
+                            className="w-full cursor-pointer transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            {wideArtwork}
+                        </button>
                         <div className="min-w-0">
                             <h1 className="text-balance text-2xl font-bold leading-tight tracking-[-0.03em] text-foreground">
                                 {track?.title ?? "Nothing playing"}
@@ -831,15 +936,17 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                 )}
 
                 {/* Narrow: the poster would eat the column, so the song identifies itself in a strip. */}
-                {!isWideLayout && (
+                {!isWideLayout && !isMotionOpen && (
                     <header className="flex shrink-0 items-center gap-3.5 px-6 pb-3 pr-16 pt-5 @4xl/lyrics:hidden">
-                        <TrackArtwork
-                            artworkUrl={track?.artworkUrl}
-                            size={56}
-                            className="size-14   shadow-lg shadow-black/30"
-                            iconSize={20}
-                            loading="eager"
-                        />
+                        <button
+                            type="button"
+                            onClick={() => setIsMotionOpen(true)}
+                            aria-pressed={isMotionOpen}
+                            aria-label={`Show cover for ${track?.title ?? "this track"}`}
+                            className="shrink-0 cursor-pointer transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            {narrowArtwork}
+                        </button>
                         <div className="min-w-0 flex-1">
                             <h1 className="truncate text-lg font-bold tracking-[-0.02em] text-foreground">
                                 {track?.title ?? "Nothing playing"}
@@ -996,6 +1103,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         </button>
                     )}
                 </div>
+            </div>
             </div>
 
             <footer className="relative flex h-10 shrink-0 items-center justify-between gap-3 px-6 pb-2 text-xs text-muted-foreground">
