@@ -803,6 +803,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             transition={{ duration: 0.2, ease: "easeOut" }}
         >
             <div className={cn("absolute inset-0 flex items-center justify-center overflow-hidden", isWideLayout ? "p-6" : "py-[0.5em]")}>
+                <div className="relative flex size-full items-center justify-center">
                 <motionLib.div
                     layoutId={coverLayoutId}
                     transition={coverTransition}
@@ -830,13 +831,14 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             setMotion(null);
                         }}
                         className={cn(
-                            "absolute inset-0 m-auto size-full object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            "absolute inset-0 m-auto aspect-square h-full w-auto object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
                             isWideLayout
                                 ? "max-h-[48rem] max-w-full rounded-2xl"
                                 : "max-h-full max-w-full rounded-lg",
                         )}
                     />
                 )}
+                </div>
             </div>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-background/90 to-transparent p-6 text-left">
                 <motionLib.div layoutId={coverTitleLayoutId} transition={coverTransition}>
