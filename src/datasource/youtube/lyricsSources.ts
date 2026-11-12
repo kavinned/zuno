@@ -21,6 +21,8 @@ export interface LyricsSource {
   requiresDuration?: boolean;
   /** Why it sits where it does. Shown in the UI, so it has to read as a sentence. */
   note: string;
+  /** Where to credit this source, when its terms require attribution. */
+  url?: string;
 }
 
 /**
@@ -39,6 +41,15 @@ export const LYRICS_SOURCES: LyricsSource[] = [
     wave: 1,
     requiresDuration: true,
     note: "Line-synced, matched on title, artist and exact duration — the same recording.",
+  },
+  {
+    id: "lrc-red",
+    label: "lrc.red",
+    timeoutMs: 4_500,
+    wave: 1,
+    requiresDuration: true,
+    note: "Word-level TTML from an ISRC catalogue, matched on title, artist and duration — can land on a different master.",
+    url: "https://lrc.red",
   },
   {
     id: "betterlyrics",

@@ -39,7 +39,7 @@ const synced = (count: number) => ({
   timing: "synced" as const,
 });
 
-equal(LYRICS_SOURCES.length, 6, "every source is in the table");
+equal(LYRICS_SOURCES.length, 7, "every source is in the table");
 check(
   rankOfSource("lrclib-exact") < rankOfSource("lrclib-search"),
   "a duration-exact match outranks a text search of the same corpus",
@@ -48,6 +48,16 @@ check(
   rankOfSource("lrclib-search") < rankOfSource("youtube-transcript"),
   "real lyrics outrank machine transcription",
 );
+check(
+  rankOfSource("lrclib-exact") < rankOfSource("lrc-red"),
+  "lrc.red sits behind an exact-recording match",
+);
+check(
+  rankOfSource("lrc-red") < rankOfSource("betterlyrics"),
+  "lrc.red outranks the community TTML source",
+);
+equal(byId("lrc-red").requiresDuration, true, "lrc.red cannot match without a duration");
+equal(byId("lrc-red").url, "https://lrc.red", "the credit link is on the source entry");
 check(
   rankOfSource("youtube-transcript") < rankOfSource("youtube-music"),
   "timed transcription outranks untimed official words, because this screen follows along",
@@ -139,7 +149,7 @@ equal(
 
 const defaultWaves = planLyricsWaves();
 equal(defaultWaves.length, 2, "by default the expensive sources are held back to a second wave");
-equal(defaultWaves[0].length, 4, "four cheap sources race first");
+equal(defaultWaves[0].length, 5, "five cheap sources race first");
 check(
   defaultWaves[1].every((source) => source.wave === 2),
   "and only wave two sources are held back",
@@ -161,7 +171,7 @@ equal(
 );
 equal(
   planLyricsWaves("lrclib-exact")[0].length,
-  4,
+  5,
   "preferring a source already in wave one does not duplicate it",
 );
 
