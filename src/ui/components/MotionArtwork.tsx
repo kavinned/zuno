@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type Hls from "hls.js";
 import type { AppleMotion } from "../../datasource/apple/motion";
+import { logInternalWarn } from "../../internal/logging";
 
 /**
  * The motion clip itself: HLS in a muted looping video.
@@ -23,6 +24,12 @@ export function MotionArtwork({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const onUnavailableRef = useRef(onUnavailable);
+  /* The play() at mount runs before HLS has attached a source, so readiness has to retry it. */
+  const playingRef = useRef(playing);
+
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
 
   useEffect(() => {
     onUnavailableRef.current = onUnavailable;
@@ -45,12 +52,20 @@ export function MotionArtwork({
         return;
       }
       disposed = true;
+      logInternalWarn("motion.video failed", { url: currentUrl ?? null });
       onUnavailableRef.current?.();
     };
 
     const attach = async (url: string) => {
       currentUrl = url;
-      const { default: HlsPlayer } = await import("hls.js");
+      let HlsPlayer;
+      try {
+        ({ default: HlsPlayer } = await import("hls.js"));
+      } catch (error) {
+        logInternalWarn("motion.hls import failed", { error: String(error) });
+        fail();
+        return;
+      }
       if (disposed) return;
 
       if (HlsPlayer.isSupported()) {
@@ -61,6 +76,11 @@ export function MotionArtwork({
         });
         hls.on(HlsPlayer.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
+          logInternalWarn("motion.hls fatal", {
+            type: data.type,
+            details: data.details,
+            reason: data.reason,
+          });
           hls?.destroy();
           hls = null;
           fail();
@@ -78,7 +98,11 @@ export function MotionArtwork({
     const onError = () => fail();
     /* The first decoded frame, not the first play: opening the split while audio is paused must
        still show the clip's frame rather than an empty slot. */
-    const onReady = () => video.setAttribute("data-ready", "");
+    const onReady = () => {
+      video.setAttribute("data-ready", "");
+      /* The play() on mount ran before HLS had a source to play, so start playback here too. */
+      if (playingRef.current) void video.play().catch(() => {});
+    };
 
     video.removeAttribute("data-ready");
     video.addEventListener("error", onError);
