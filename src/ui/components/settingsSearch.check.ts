@@ -1,6 +1,6 @@
 export {};
 
-import { searchSettings } from "./settingsSearchIndex";
+import { searchSettings, settingAnchorId } from "./settingsSearchIndex";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -16,5 +16,13 @@ check(
   "search finds a library setting",
 );
 check(searchSettings("this cannot match").length === 0, "unknown query has no results");
+check(
+  searchSettings("motion").some((entry) => entry.title === "Animated album covers"),
+  "keywords make a setting findable by a word it does not contain",
+);
+check(
+  settingAnchorId("Animated album covers") === "setting-animated-album-covers",
+  "anchors are derived from the title",
+);
 
 console.log("settingsSearch.check.ts passed");
