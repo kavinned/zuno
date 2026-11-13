@@ -429,7 +429,9 @@ const BROWSE_ITEM_TYPES = new Set(["song", "video", "album", "playlist", "artist
 // v10: album names are no longer guessed from whatever column was left over, so entries
 // parsed under the old rule carry release years and play counts where an album should be.
 // v11: tracks now carry `albumId`, so entries parsed before it have no album to open.
-const LIBRARY_CACHE_KEY = "youtube-music:library:v11";
+// v12: album names were the whole "artist • album • duration" column, which no album lookup
+// can match; entries parsed under that rule have to be fetched again.
+const LIBRARY_CACHE_KEY = "youtube-music:library:v12";
 /** The account the user picked by hand, which outranks the automatic probe. */
 /**
  * Content playback nonce — 16 characters from the alphabet YouTube's own player draws on.
@@ -460,7 +462,7 @@ const ARTIST_CACHE_VERSION = "v10";
 const ARTIST_REFRESH_COOLDOWN_MS = 60_000;
 const ARTIST_SUBSCRIPTION_OVERRIDE_MS = 60_000;
 const PLAYLIST_PAGE_SESSION_TTL_MS = 10 * 60_000;
-const PLAYLIST_TRACK_CACHE_VERSION = "v6";
+const PLAYLIST_TRACK_CACHE_VERSION = "v7";
 /** How long a click waits for an addon match before YouTube wins. */
 const SUBSTITUTION_BUDGET_MS = 3000;
 /**
@@ -3551,7 +3553,7 @@ export class YouTubeMusicDataSource extends DataSource {
 
   async getAlbumTracks(album: Album, onUpdate?: (tracks: Track[]) => void): Promise<Track[]> {
     // v5: tracks cached under v4 may name the release year as their artist (#169).
-    const cacheKey = `youtube-music:album-tracks:v5:${album.id}`;
+    const cacheKey = `youtube-music:album-tracks:v6:${album.id}`;
     const cached = await getCachedJson<Track[]>(cacheKey);
 
     if (cached?.length) {
@@ -5564,7 +5566,7 @@ export class YouTubeMusicDataSource extends DataSource {
       return { artists: [], tracks: [], albums: [], playlists: [] };
     }
     const cacheId = normalizedQuery.toLocaleLowerCase();
-    const cacheKey = `youtube-music:mixed-search:v5:${cacheId}`;
+    const cacheKey = `youtube-music:mixed-search:v6:${cacheId}`;
     const cached = await getCachedJson<SearchResults>(cacheKey);
     if (cached && this.hasSearchResults(cached)) {
       globalThis.setTimeout(() => {
@@ -5700,7 +5702,9 @@ export class YouTubeMusicDataSource extends DataSource {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) return [];
     const cacheId = normalizedQuery.toLowerCase();
-    const cacheKey = `youtube-music:search:v1:${cacheId}`;
+    // v2: cached rows hold album names taken from the whole "artist • album • duration"
+    // column, so their album was junk; fetch them again with the run-scoped name.
+    const cacheKey = `youtube-music:search:v2:${cacheId}`;
     const cached = await getCachedJson<Track[]>(cacheKey);
 
     if (cached) {
@@ -5847,7 +5851,7 @@ export class YouTubeMusicDataSource extends DataSource {
     seed: Track,
     onUpdate?: (tracks: Track[]) => void,
   ): Promise<Track[]> {
-    const cacheKey = `youtube-music:recommendations:v1:${seed.id}`;
+    const cacheKey = `youtube-music:recommendations:v2:${seed.id}`;
     const cached = await getCachedJson<Track[]>(cacheKey);
 
     if (cached) {
@@ -6338,8 +6342,8 @@ export class YouTubeMusicDataSource extends DataSource {
     /* `params` is part of the key: mood categories all share one browseId, so keying on the
        id alone would serve the first mood opened for every mood thereafter. */
     const cacheKey = typeof surface === "string"
-      ? `youtube-music:browse:v2:${surface}`
-      : `youtube-music:browse:v2:id:${surface.browseId}:${surface.params ?? ""}`;
+      ? `youtube-music:browse:v3:${surface}`
+      : `youtube-music:browse:v3:id:${surface.browseId}:${surface.params ?? ""}`;
     const cached = await getCachedJson<BrowsePage>(cacheKey);
     if (cached?.shelves.length) {
       void this.refreshBrowsePage(surface, cacheKey).catch(() => {});
@@ -6983,7 +6987,7 @@ export class YouTubeMusicDataSource extends DataSource {
    * plus a browse call to fetch.
    */
   async getRelated(track: Track): Promise<BrowseShelf[]> {
-    const cacheKey = `youtube-music:related:v1:${track.id}`;
+    const cacheKey = `youtube-music:related:v2:${track.id}`;
     const cached = await getCachedJson<BrowseShelf[]>(cacheKey);
     if (cached?.length) return cached;
 
@@ -7040,7 +7044,8 @@ export class YouTubeMusicDataSource extends DataSource {
     const empty: SearchResults = { artists: [], tracks: [], albums: [], playlists: [] };
     if (!normalizedQuery) return empty;
 
-    const cacheKey = `youtube-music:search:${category}:v1:${normalizedQuery.toLocaleLowerCase()}`;
+    // v2: same album-name correction as the song-search cache above.
+    const cacheKey = `youtube-music:search:${category}:v2:${normalizedQuery.toLocaleLowerCase()}`;
     const cached = await getCachedJson<SearchResults>(cacheKey);
     if (cached) return cached;
 
