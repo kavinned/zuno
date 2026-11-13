@@ -43,7 +43,7 @@ import { TrackArtwork } from "../components/TrackArtwork";
 import { MotionArtwork } from "../components/MotionArtwork";
 import { getTrackMotion } from "../../datasource/apple/motionClient";
 import type { AppleMotion } from "../../datasource/apple/motion";
-import { useMotionArtworkEnabled } from "../settings/motionArtwork";
+import { getExpandedCoverDefault, useMotionArtworkEnabled } from "../settings/motionArtwork";
 import { BlurredArtwork } from "../components/BlurredArtwork";
 import { setAmbientArtwork } from "../stores/ambientArtworkStore";
 import {
@@ -179,7 +179,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const [isOnline, setIsOnline] = useState(() => navigator.onLine);
     const motionEnabled = useMotionArtworkEnabled();
     const [motion, setMotion] = useState<AppleMotion | null>(null);
-    const [isMotionOpen, setIsMotionOpen] = useState(false);
+    const [isMotionOpen, setIsMotionOpen] = useState(() => getExpandedCoverDefault());
 
     const scrollerRef = useRef<HTMLDivElement>(null);
     const lineRefs = useRef<Array<HTMLElement | null>>([]);
@@ -245,10 +245,11 @@ export function LyricsView({ onClose }: LyricsViewProps) {
      */
     useEffect(() => {
         setMotion(null);
-        if (!motionEnabled || reduce || !isOnline || !track) {
+        if (reduce || !isOnline || !track) {
             setIsMotionOpen(false);
             return;
         }
+        if (!motionEnabled) return;
 
         let cancelled = false;
         void getTrackMotion({

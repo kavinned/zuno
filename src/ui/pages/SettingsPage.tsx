@@ -123,7 +123,9 @@ import {
   useLyricsFontScale,
 } from "../settings/lyricsFontScale";
 import {
+  setExpandedCoverDefault,
   setMotionArtworkEnabled,
+  useExpandedCoverDefault,
   useMotionArtworkEnabled,
 } from "../settings/motionArtwork";
 import { setZoom, useZoom, ZOOM_LEVELS } from "../settings/zoom";
@@ -662,6 +664,7 @@ export function SettingsPage({
   const preferredLyricsSource = usePreferredLyricsSourceId();
   const lyricsFontScale = useLyricsFontScale();
   const motionArtwork = useMotionArtworkEnabled();
+  const expandedCover = useExpandedCoverDefault();
   const zoom = useZoom();
   const lyricsTranslationLang = useLyricsTranslationLang();
   const madeForYouVisible = useMadeForYouVisible();
@@ -1747,6 +1750,13 @@ export function SettingsPage({
               description="Apple Music's moving artwork on the lyrics screen, when available."
               checked={motionArtwork}
               onCheckedChange={setMotionArtworkEnabled}
+            />
+
+            <SettingToggle
+              title="Expanded cover by default"
+              description="Open the lyrics screen with the cover already in its split layout."
+              checked={expandedCover}
+              onCheckedChange={setExpandedCoverDefault}
             />
 
 

@@ -7,6 +7,7 @@ import { useSyncExternalStore } from "react";
  * setting exists so anyone who does not want the extra lookups can turn it off.
  */
 const STORAGE_KEY = "motion-artwork";
+const EXPANDED_STORAGE_KEY = "expanded-cover-default";
 const CHANGE_EVENT = "motion-artwork-change";
 
 export const DEFAULT_MOTION_ARTWORK = true;
@@ -46,4 +47,26 @@ export function useMotionArtworkEnabled(): boolean {
     getMotionArtworkEnabled,
     () => DEFAULT_MOTION_ARTWORK,
   );
+}
+
+export function getExpandedCoverDefault(): boolean {
+  try {
+    return localStorage.getItem(EXPANDED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setExpandedCoverDefault(enabled: boolean): void {
+  try {
+    if (enabled) localStorage.setItem(EXPANDED_STORAGE_KEY, "true");
+    else localStorage.removeItem(EXPANDED_STORAGE_KEY);
+  } catch {
+    // Quota or a locked profile: the choice still applies for this session.
+  }
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+}
+
+export function useExpandedCoverDefault(): boolean {
+  return useSyncExternalStore(subscribe, getExpandedCoverDefault, () => false);
 }
