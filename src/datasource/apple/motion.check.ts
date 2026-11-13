@@ -1,6 +1,7 @@
 export {};
 
 import {
+  albumForLookup,
   albumIdOf,
   durationAgrees,
   isCompilation,
@@ -89,5 +90,14 @@ equal(webPlayerTokenFromScript(`x"${goodToken}"y`, 1_000_000_000_000), goodToken
 check(webPlayerTokenFromScript(`x"${goodToken}"y`, 2_100_000_000_000) === null, "expired tokens are not used");
 
 equal(motionCacheKey(" Anti-Hero ", "Taylor Swift", "Midnights", 194), "anti hero|taylor swift|midnights|194", "cache key is normalized");
+
+/*
+ * YouTube song rows used to hand over "artist • album • duration" as the album, and rows
+ * cached or persisted before the parser fix still do. An album the lookup cannot recognise is
+ * worse than none: it fails the album gate every time.
+ */
+equal(albumForLookup("IVE • IVE SECRET • 2:34"), null, "a subtitle-shaped album is dropped");
+equal(albumForLookup("Midnights (3am Edition)"), "Midnights (3am Edition)", "a real album is kept");
+equal(albumForLookup(null), null, "no album stays none");
 
 console.log("motion.check.ts passed");

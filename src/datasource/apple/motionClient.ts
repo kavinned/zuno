@@ -7,6 +7,7 @@
  */
 import { tauriFetch } from "../youtube/tauriFetch";
 import {
+  albumForLookup,
   albumIdOf,
   durationAgrees,
   isCompilation,
@@ -41,10 +42,11 @@ let tokenPromise: Promise<string | null> | null = null;
 let tokenRetryAt = 0;
 
 export async function getTrackMotion(query: MotionQuery): Promise<AppleMotion | null> {
-  const key = motionCacheKey(query.title, query.artist, query.album, query.durationSec);
+  const album = albumForLookup(query.album);
+  const key = motionCacheKey(query.title, query.artist, album, query.durationSec);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const { motion, cacheable } = await lookup(query);
+  const { motion, cacheable } = await lookup({ ...query, album });
   if (cacheable) cache.set(key, motion);
   return motion;
 }

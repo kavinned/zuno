@@ -204,6 +204,18 @@ export function durationAgrees(
   return Math.abs(foundMs / 1000 - wantSec) <= toleranceSec;
 }
 
+/**
+ * The album to look a track up by.
+ *
+ * YouTube song rows have handed over the whole "artist • album • duration" line as the album,
+ * and rows cached or persisted before that was fixed still do. An album no catalog can agree
+ * with fails the album gate outright, so anything ending in a duration is dropped instead.
+ */
+export function albumForLookup(album: string | null | undefined): string | null {
+  if (!album) return null;
+  return /\s•\s\d{1,2}:\d{2}$/.test(album) ? null : album;
+}
+
 export function motionCacheKey(
   title: string,
   artist: string,
