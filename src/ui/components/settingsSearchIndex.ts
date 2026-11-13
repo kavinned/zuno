@@ -8,6 +8,11 @@ export type SettingsSearchEntry = {
   description: string;
   /** Extra words that should find this row without repeating them in the description. */
   keywords?: string[];
+  /**
+   * A section shortcut with no single row to anchor: selecting it opens the tab. Everything
+   * else must match a literal `title` in `SettingsPage.tsx`, enforced by the coverage check.
+   */
+  section?: boolean;
 };
 
 /**
@@ -21,31 +26,35 @@ export const SETTINGS_ENTRIES: SettingsSearchEntry[] = [
   { id: "account", tab: "about", category: "Account", title: "Account", description: "Sign in and manage your YouTube Music account." },
   { id: "last-fm", tab: "about", category: "Account", title: "Last.fm", description: "Connect Last.fm and scrobble plays." },
   { id: "scrobble-plays", tab: "about", category: "Account", title: "Scrobble plays", description: "Send what you listen to to Last.fm.", keywords: ["last.fm", "history"] },
-  { id: "discord-presence", tab: "about", category: "Account", title: "Discord presence", description: "Show what you are playing and hide status when paused." },
+  { id: "discord-presence", tab: "about", category: "Account", title: "Discord presence", description: "Show what you are playing and hide status when paused.", section: true },
   { id: "discord-show-playing", tab: "about", category: "Account", title: "Show what you're playing", description: "Share the current track on your Discord profile.", keywords: ["discord", "status"] },
   { id: "discord-hide-paused", tab: "about", category: "Account", title: "Hide status when paused", description: "Stop showing a paused track on Discord.", keywords: ["discord", "presence"] },
-  { id: "updates", tab: "about", category: "Account", title: "Updates", description: "Check for and install Zuno updates." },
+  { id: "updates", tab: "about", category: "Account", title: "Updates", description: "Check for and install Zuno updates.", section: true },
   { id: "theme", tab: "appearance", category: "Appearance", title: "Theme", description: "Choose light, dark, or system theme." },
   { id: "app-size", tab: "appearance", category: "Appearance", title: "App size", description: "Zoom the whole app in or out. Ctrl + and Ctrl - work too." },
-  { id: "motion", tab: "appearance", category: "Appearance", title: "Motion", description: "Control animations and visual effects." },
+  { id: "motion", tab: "appearance", category: "Appearance", title: "Motion", description: "Control animations and visual effects.", section: true },
   { id: "potato-pc", tab: "appearance", category: "Appearance", title: "Potato PC", description: "Turn off animations, blur, shadows and the ambient artwork in one go.", keywords: ["performance", "reduce motion", "slow"] },
-  { id: "toolbar", tab: "appearance", category: "Appearance", title: "Toolbar", description: "Choose which controls appear in the title bar." },
-  { id: "onboarding", tab: "appearance", category: "Appearance", title: "Onboarding", description: "Restart the first-run introduction." },
+  { id: "toolbar", tab: "appearance", category: "Appearance", title: "Toolbar", description: "Choose which controls appear in the title bar.", section: true },
+  { id: "onboarding", tab: "appearance", category: "Appearance", title: "Onboarding", description: "Restart the first-run introduction.", section: true },
   { id: "made-for-you", tab: "appearance", category: "Appearance", title: "Made for you", description: "Show personalized recommendations on Home." },
   { id: "output-device", tab: "playback", category: "Playback", title: "Output device", description: "Choose where Zuno sends audio." },
   { id: "playback-method", tab: "playback", category: "Playback", title: "Playback method", description: "Choose between the built-in player and the hidden YouTube frame.", keywords: ["audio engine", "native"] },
   { id: "normalize-volume", tab: "playback", category: "Playback", title: "Normalize volume", description: "Play every track at a similar loudness." },
-  { id: "equalizer", tab: "playback", category: "Playback", title: "Equalizer", description: "Adjust audio frequencies and presets." },
+  { id: "equalizer", tab: "playback", category: "Playback", title: "Equaliser", description: "Adjust audio frequencies and presets.", keywords: ["equalizer"] },
   { id: "gapless-playback", tab: "playback", category: "Playback", title: "Gapless playback", description: "Remove silence between tracks." },
   { id: "crossfade", tab: "playback", category: "Playback", title: "Crossfade", description: "Blend the end of one track into the next." },
   { id: "restore-tabs", tab: "playback", category: "Playback", title: "Restore tabs and queues", description: "Restore your playback session after restarting." },
   { id: "audio-engine", tab: "playback", category: "Playback", title: "Audio engine", description: "Choose the playback method and authenticated streaming." },
+  { id: "transitions", tab: "playback", category: "Playback", title: "Transitions", description: "Gapless playback, crossfade, and how one track becomes the next." },
+  { id: "session", tab: "playback", category: "Playback", title: "Session", description: "Restore tabs and queues after restarting." },
   { id: "resolve-as-account", tab: "playback", category: "Playback", title: "Resolve streams as your account", description: "Attach your session when resolving a track for Premium bitrates.", keywords: ["authenticated", "premium", "quality"] },
   { id: "add-plays-history", tab: "playback", category: "Playback", title: "Add plays to YouTube Music history", description: "Report plays to YouTube Music so its recommendations learn from them.", keywords: ["scrobbling", "history", "recommendations"] },
   { id: "local-music", tab: "system", category: "Library", title: "Local music", description: "Create playlists from folders on this computer." },
-  { id: "addon-sources", tab: "system", category: "Library", title: "Addon sources", description: "Servers that supply lossless streams in place of YouTube's audio." },
-  { id: "cache", tab: "system", category: "Library", title: "Cache", description: "Set cache size and clear cached content." },
-  { id: "downloads", tab: "system", category: "Library", title: "Downloads", description: "Set offline storage limits and remove downloads." },
+  { id: "addon-sources", tab: "system", category: "Library", title: "Addon sources", description: "Servers that supply lossless streams in place of YouTube's audio.", section: true },
+  { id: "cache", tab: "system", category: "Library", title: "Cache", description: "Set cache size and clear cached content.", section: true },
+  { id: "downloads", tab: "system", category: "Library", title: "Downloads", description: "Set offline storage limits and remove downloads.", section: true },
+  { id: "storage", tab: "system", category: "Library", title: "Storage", description: "Cache size, downloads, and local files." },
+  { id: "quality", tab: "system", category: "Library", title: "Quality", description: "Streaming and download quality." },
   { id: "streaming-quality", tab: "system", category: "Library", title: "Streaming quality", description: "Choose quality for music played over the network." },
   { id: "download-quality", tab: "system", category: "Library", title: "Download quality", description: "Choose quality for offline music." },
   { id: "lyrics", tab: "system", category: "Library", title: "Lyrics", description: "Translate lyrics, set text size, and choose a source." },
@@ -57,6 +66,7 @@ export const SETTINGS_ENTRIES: SettingsSearchEntry[] = [
   { id: "launch-at-startup", tab: "system", category: "Library", title: "Launch at startup", description: "Start Zuno when your computer starts." },
   { id: "remember-window", tab: "system", category: "Library", title: "Remember window size and location", description: "Restore the main window geometry." },
   { id: "troubleshooting", tab: "system", category: "Library", title: "Troubleshooting", description: "Open logs or reset Zuno data." },
+  { id: "system", tab: "system", category: "Library", title: "System", description: "Startup, window restore, and troubleshooting." },
   { id: "mini-player", tab: "window", category: "Window", title: "Mini player", description: "Show a compact player when the main window loses focus." },
   { id: "mini-player-hover-bar", tab: "window", category: "Window", title: "Mini player hover bar", description: "Choose what the expanded hover slider controls.", keywords: ["mini player", "seek", "volume"] },
   { id: "library-sidebar", tab: "window", category: "Window", title: "Library sidebar", description: "Choose the playlist rail size and hover behavior." },
@@ -70,7 +80,7 @@ export const SETTINGS_ENTRIES: SettingsSearchEntry[] = [
   { id: "search-suggestions", tab: "window", category: "Behavior", title: "Search suggestions", description: "Show live suggestions and a top-result preview while you type.", keywords: ["autocomplete", "search"] },
   { id: "system-media-controls", tab: "window", category: "Window", title: "Show in system media controls", description: "Show playback in system media controls.", keywords: ["media keys"] },
   { id: "window-outline", tab: "window", category: "Window", title: "Window outline", description: "Show or hide the thin edge around the window." },
-  { id: "keyboard-shortcuts", tab: "shortcuts", category: "Shortcuts", title: "Keyboard shortcuts", description: "View, record, or clear keyboard bindings." },
+  { id: "keyboard-shortcuts", tab: "shortcuts", category: "Shortcuts", title: "Keyboard shortcuts", description: "View, record, or clear keyboard bindings.", section: true },
 ];
 
 /** Stable DOM id for a settings row, used to scroll a search result into view. */

@@ -553,7 +553,7 @@ function SettingsCardHeader({
   status?: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div id={settingAnchorId(title)} className="flex items-center justify-between gap-3">
       {icon ? (
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary">
           {icon}
@@ -1141,9 +1141,15 @@ export function SettingsPage({
                 setActiveTab(tab);
                 setSettingsQuery("");
                 requestAnimationFrame(() => {
+                  const row = document.getElementById(settingAnchorId(title));
+                  if (row) {
+                    row.scrollIntoView({ block: "center", behavior: "auto" });
+                    return;
+                  }
+                  /* Section shortcut with no single row: open the tab at its top. */
                   document
-                    .getElementById(settingAnchorId(title))
-                    ?.scrollIntoView({ block: "center", behavior: "auto" });
+                    .querySelector('[role="tabpanel"]')
+                    ?.scrollIntoView({ block: "start", behavior: "auto" });
                 });
               }}
             />
