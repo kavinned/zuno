@@ -1,12 +1,15 @@
 /**
- * Self-check for `removeAccountOutcome`, the one piece of the multi-account switch/remove flow
- * that lives on the TypeScript side rather than in Rust's `YoutubeAccountStore` (see its own
- * tests in src-tauri/src/lib.rs). It decides what `LibraryController.removeGoogleAccount` shows
- * the user: nothing, a fallback account's library, or signed-out.
+ * Self-checks for the YouTube Music parser pieces that live as pure functions: the
+ * multi-account switch/remove outcome (`removeAccountOutcome`), the artist named by a bare
+ * subtitle (`artistFromSubtitle`), and the album a song row points at (`trackAlbumFromItem`).
  */
 export {};
 
-import { artistFromSubtitle, removeAccountOutcome } from "./YouTubeMusicDataSource";
+import {
+  artistFromSubtitle,
+  removeAccountOutcome,
+  trackAlbumFromItem,
+} from "./YouTubeMusicDataSource";
 
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -46,3 +49,56 @@ check(artistFromSubtitle("Single • The 1975") === "The 1975", "a name containi
 check(artistFromSubtitle(undefined) === undefined, "no subtitle, no artist");
 
 console.log("YouTubeMusicDataSource.artistFromSubtitle: ok");
+
+// A song row renders "artist • album • duration" in one linked column. Taking the whole column
+// text made the album `IVE • IVE SECRET • 2:34`, which then failed every album comparison —
+// including the Apple Music motion lookup, which is why search-opened tracks lost their clip.
+const browseIdOf = (run: { endpoint?: unknown; navigationEndpoint?: unknown }): string | undefined => {
+  const endpoint = run.endpoint as { payload?: { browseId?: string } } | undefined;
+  return endpoint?.payload?.browseId;
+};
+
+const songRow = {
+  flex_columns: [
+    {
+      title: {
+        toString: () => "Noun",
+        runs: [{ text: "Noun", endpoint: { payload: { browseId: "UCartist" } } }],
+      },
+    },
+    {
+      title: {
+        toString: () => "IVE • IVE SECRET • 2:34",
+        runs: [
+          { text: "IVE", endpoint: { payload: { browseId: "UCartist" } } },
+          { text: " • " },
+          { text: "IVE SECRET", endpoint: { payload: { browseId: "MPREalbum" } } },
+          { text: " • " },
+          { text: "2:34" },
+        ],
+      },
+    },
+  ],
+};
+
+check(
+  trackAlbumFromItem(songRow, browseIdOf).name === "IVE SECRET",
+  "only the album-linked run names the album",
+);
+check(
+  trackAlbumFromItem(songRow, browseIdOf).id === "MPREalbum",
+  "the album's browse id comes back with its name",
+);
+check(
+  trackAlbumFromItem(
+    { flex_columns: [{ title: { toString: () => "IVE" } }, { title: { toString: () => "IVE", runs: [{ text: "IVE" }] } }] },
+    browseIdOf,
+  ).name === undefined,
+  "a column with no album link names no album",
+);
+check(
+  trackAlbumFromItem({}, browseIdOf).name === undefined,
+  "a row with no columns names no album",
+);
+
+console.log("YouTubeMusicDataSource.trackAlbumFromItem: ok");

@@ -373,6 +373,41 @@ export function artistFromSubtitle(subtitle: string | undefined): string | undef
   return parts.length > 0 ? parts.join(" • ") : undefined;
 }
 
+/**
+ * The album name a linked column carries.
+ *
+ * Song rows render "artist • album • duration" as one column, and only the run that carries
+ * the album link names the album. Joining the whole column made `IVE • IVE SECRET • 2:34` the
+ * album, which then matched no album and no Apple Music counterpart.
+ */
+export function albumNameFromColumn(
+  column: MusicColumn,
+  browseIdOf: (run: { endpoint?: unknown; navigationEndpoint?: unknown }) => string | undefined,
+): string | undefined {
+  const albumRun = column.title?.runs?.find((run) => browseIdOf(run)?.startsWith("MPRE"));
+  return albumRun?.text?.trim() || undefined;
+}
+
+/**
+ * The album a row belongs to: its name *and* the id behind the link.
+ *
+ * Only a genuinely linked album column counts, and within it only the album-linked run — see
+ * `albumNameFromColumn`. Kept pure so the check can drive the real selection logic rather than
+ * a copy of it.
+ */
+export function trackAlbumFromItem(
+  item: MusicItem,
+  browseIdOf: (run: { endpoint?: unknown; navigationEndpoint?: unknown }) => string | undefined,
+): { name?: string; id?: string } {
+  const linkedAlbum = (item.flex_columns ?? [])
+    .slice(1)
+    .find((column) => Boolean(albumNameFromColumn(column, browseIdOf)));
+  if (!linkedAlbum) return {};
+
+  const id = linkedAlbum.title?.runs?.map(browseIdOf).find((browseId) => browseId?.startsWith("MPRE"));
+  return { name: albumNameFromColumn(linkedAlbum, browseIdOf), id: id ?? undefined };
+}
+
 export function removeAccountOutcome(
   previousCookie: string | null,
   newActiveCookie: string | null,
@@ -1085,25 +1120,6 @@ export class YouTubeMusicDataSource extends DataSource {
       ?? texts.find((value) => /^\s*\d+(?:[.,]\d+)?\s*[KMB]\s*$/i.test(value));
   }
 
-  private getColumnText(column: MusicColumn): string | undefined {
-    return column.title?.toString()
-      || column.title?.runs?.map((run) => run.text).filter(Boolean).join("");
-  }
-
-  /**
-   * Whether a column links to an album, as opposed to anything else that happens to be linked.
-   *
-   * "Not a channel" was too loose: a playlist link (`VL`/`PL`/`OLAK`) passed it just as easily,
-   * so a row whose second column pointed at a playlist reported that playlist as its album.
-   * Album browse ids are `MPRE`-prefixed, and that is the only thing worth trusting here.
-   */
-  private isAlbumColumn(column: MusicColumn): boolean {
-    return column.title?.runs?.some((run) => {
-      const browseId = this.findBrowseId(run.endpoint) ?? this.findBrowseId(run.navigationEndpoint);
-      return Boolean(browseId?.startsWith("MPRE"));
-    }) ?? false;
-  }
-
   /**
    * The album a row belongs to, or nothing.
    *
@@ -1113,26 +1129,15 @@ export class YouTubeMusicDataSource extends DataSource {
    * play counts and playlist names all got reported as albums. A blank cell is right far more
    * often than a guess: a single, a video or a user upload genuinely has no album, and the
    * linked column is present whenever one does.
-   */
-  /**
-   * The album a row belongs to: its name *and* the id behind the link.
    *
-   * The id is the point. `isAlbumColumn` already has to find a browse id to decide the column
-   * is an album at all, and throwing it away meant opening an album from a row had to search
-   * for `"<album> <artist>"` and hope the first hit was right — which lands on compilations,
-   * remasters and same-named singles often enough to be wrong in normal use.
+   * The id matters too: opening an album from a row used to search for `"<album> <artist>"` and
+   * hope the first hit was right — which lands on compilations, remasters and same-named
+   * singles often enough to be wrong in normal use. The selection lives in
+   * `trackAlbumFromItem` so the check can drive it.
    */
   private getTrackAlbum(item: MusicItem): { name?: string; id?: string } {
-    const linkedAlbum = (item.flex_columns ?? [])
-      .slice(1)
-      .find((column) => this.isAlbumColumn(column));
-    if (!linkedAlbum) return {};
-
-    const id = linkedAlbum.title?.runs
-      ?.map((run) => this.findBrowseId(run.endpoint) ?? this.findBrowseId(run.navigationEndpoint))
-      .find((browseId) => browseId?.startsWith("MPRE"));
-
-    return { name: this.getColumnText(linkedAlbum)?.trim() || undefined, id: id ?? undefined };
+    return trackAlbumFromItem(item, (run) =>
+      this.findBrowseId(run.endpoint) ?? this.findBrowseId(run.navigationEndpoint));
   }
 
   private getTitle(item: MusicItem): string | null {
