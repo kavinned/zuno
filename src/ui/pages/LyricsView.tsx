@@ -833,7 +833,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             setMotion(null);
                         }}
                         className={cn(
-                            "absolute inset-0 m-auto aspect-square h-full w-auto object-contain opacity-0 transition-opacity duration-500 data-ready:opacity-100",
+                            // Non-square fallback renditions letterbox under `contain`, letting the
+                            // static cover show through behind the clip.
+                            "absolute inset-0 m-auto aspect-square h-full w-auto object-cover opacity-0 transition-opacity duration-500 data-ready:opacity-100",
                             isWideLayout
                                 ? "max-h-[48rem] max-w-full rounded-2xl"
                                 : "max-h-full max-w-full rounded-lg",
