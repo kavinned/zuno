@@ -67,6 +67,11 @@ export const RENDER_EFFECTS = [
     description: "The 44s scale-and-pan on the lyrics backdrop.",
   },
   {
+    id: "lyrics-sweep",
+    label: "Lyrics sweep",
+    description: "The current line fills with colour as it is sung. Off: it lights up all at once.",
+  },
+  {
     id: "visualizer",
     label: "Visualisers and loaders",
     description: "The playing-row bars and the bouncing audio loader.",

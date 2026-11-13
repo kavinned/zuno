@@ -11,7 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { motion as motionLib } from "motion/react";
-import { useReduceMotion } from "../settings/renderEffects";
+import { useEffectDisabled, useReduceMotion } from "../settings/renderEffects";
 import { cn } from "@/lib/utils";
 import {
     CloseIcon,
@@ -87,11 +87,11 @@ const PAUSED_SAMPLE_MS = 250;
  */
 const DEPTH = [
     { opacity: 1 },
-    { opacity: 0.55 },
-    { opacity: 0.36 },
-    { opacity: 0.24 },
-    { opacity: 0.16 },
-    { opacity: 0.12 },
+    { opacity: 0.47 },
+    { opacity: 0.31 },
+    { opacity: 0.2 },
+    { opacity: 0.14 },
+    { opacity: 0.1 },
 ];
 
 /*
@@ -129,6 +129,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const track = playerState.currentTrack;
     const isPlaying = playerState.status === "playing";
     const reduce = useReduceMotion();
+    const sweepDisabled = useEffectDisabled("lyrics-sweep");
     const isFullscreen = usePlayerUIState().isLyricsFullscreen;
     const offset = useLyricsOffset(track?.id);
     const fontScale = useLyricsFontScale();
@@ -475,7 +476,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                 setActiveIndex(next);
             }
 
-            if (reduce || next < 0) return;
+            if (reduce || sweepDisabled || next < 0) return;
             /* The sweep is written straight onto the node. It changes every frame by definition,
          so routing it through state would undo the optimisation directly above. */
             const progress = getLineProgress(
@@ -510,7 +511,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         };
         frame = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(frame);
-    }, [isSynced, isPlaying, lyrics, offset, reduce]);
+    }, [isSynced, isPlaying, lyrics, offset, reduce, sweepDisabled]);
 
     /*
      * Translation is best-effort and entirely optional: a failure leaves `translations` null
@@ -1072,6 +1073,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                                     index === tabbableIndex
                                                 }
                                                 reduce={reduce}
+                                                sweep={!sweepDisabled}
                                                 translation={subText}
                                                 onSeek={seekLine}
                                                 onFocusLine={setFocusIndex}
@@ -1083,7 +1085,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                                                 ref={(element) =>
                                                     registerLine(index, element)
                                                 }
-                                                className="text-pretty py-1 leading-relaxed text-foreground/85"
+                                                className="text-pretty py-1 leading-relaxed text-foreground/75"
                                             >
                                                 {displayText}
                                                 {subText && (
@@ -1243,6 +1245,8 @@ interface SyncedLineProps {
     isActive: boolean;
     isTabbable: boolean;
     reduce: boolean;
+    /** False while the "Lyrics sweep" effect is switched off: the line lights up at once. */
+    sweep: boolean;
     /** Absent when translation is off, still loading, or could not be aligned to this line. */
     translation?: string;
     onSeek: (index: number) => void;
@@ -1270,6 +1274,7 @@ const SyncedLine = memo(function SyncedLine({
     isActive,
     isTabbable,
     reduce,
+    sweep,
     translation,
     onSeek,
     onFocusLine,
@@ -1332,7 +1337,7 @@ const SyncedLine = memo(function SyncedLine({
                  * running. Under reduced motion nothing writes `--sweep`, so the line would stick at
                  * the gradient's 0% end and render dimmer than its neighbours.
                  */
-                isActive && !reduce ? "lyric-sweep" : "text-foreground",
+                isActive && !reduce && sweep ? "lyric-sweep" : "text-foreground",
                 !isActive && "hover:opacity-100",
             )}
             style={{ opacity: depth.opacity }}

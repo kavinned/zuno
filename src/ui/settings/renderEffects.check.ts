@@ -76,6 +76,7 @@ check(attribute() === "", `the master switch clears the attribute, got "${attrib
 // localStorage keys' contents, so they are load-bearing beyond this file.
 const ids = RENDER_EFFECTS.map((effect) => effect.id);
 check(new Set(ids).size === ids.length, "effect ids are unique");
+check(ids.includes("lyrics-sweep"), "the lyric sweep has its own switch");
 check(
   ids.every((id) => /^[a-z-]+$/.test(id)),
   "effect ids stay attribute-safe (lowercase and dashes, no whitespace)",
