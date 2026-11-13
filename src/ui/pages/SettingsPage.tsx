@@ -1137,9 +1137,14 @@ export function SettingsPage({
           {settingsQuery.trim() ? (
             <SettingsSearchResults
               query={settingsQuery}
-              onSelect={(tab) => {
+              onSelect={(tab, title) => {
                 setActiveTab(tab);
                 setSettingsQuery("");
+                requestAnimationFrame(() => {
+                  document
+                    .getElementById(settingAnchorId(title))
+                    ?.scrollIntoView({ block: "center", behavior: "auto" });
+                });
               }}
             />
           ) : (

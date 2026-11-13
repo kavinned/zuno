@@ -38,7 +38,7 @@ export function SettingsSearchResults({
   onSelect,
 }: {
   query: string;
-  onSelect: (tab: SettingsTab) => void;
+  onSelect: (tab: SettingsTab, title: string) => void;
 }) {
   const results = useMemo(() => searchSettings(query), [query]);
 
@@ -46,9 +46,9 @@ export function SettingsSearchResults({
     <section className="flex flex-col gap-1 rounded-xl border border-border bg-card/50 p-1.5" aria-label="Setting search results">
       {results.length > 0 ? results.map((result) => (
         <button
-          key={`${result.tab}-${result.title}`}
+          key={result.id}
           type="button"
-          onClick={() => onSelect(result.tab)}
+          onClick={() => onSelect(result.tab, result.title)}
           className="flex flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <span className="flex items-baseline justify-between gap-3">
