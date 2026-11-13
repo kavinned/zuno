@@ -109,6 +109,7 @@ import {
   SettingsSearchResults,
   type SettingsTab,
 } from "../components/SettingsSearch";
+import { settingAnchorId } from "../components/settingsSearchIndex";
 import { GoogleSignInButton } from "../components/GoogleSignInButton";
 import { ExternalLinkButton } from "../components/ExternalLinkButton";
 import {
@@ -397,6 +398,7 @@ function SettingRow({
   const labelId = useId();
   return (
     <div
+      id={settingAnchorId(title)}
       className={cn(
         "flex items-start justify-between gap-6 py-2.5",
         disabled && "pointer-events-none opacity-50",
