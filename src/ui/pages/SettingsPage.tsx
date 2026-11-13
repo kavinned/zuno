@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useMemo,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -694,6 +695,17 @@ export function SettingsPage({
   const windowControlStyle: WindowControlStyle = nativeWindowControls
     ? "native"
     : windowsStyleWindowControls ? "windows" : "macos";
+  /* Rows that never render here cannot be jumped to; do not offer them. */
+  const unavailableSettingIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (miniPlayerSkin !== "classic") ids.add("mini-player-hover-bar");
+    if (!(isLinux && tilingWindowManager && windowControlStyle !== "native")) {
+      ids.add("compositor-controls");
+    }
+    if (windowControlStyle === "native") ids.add("window-outline");
+    if (!isLinux) ids.add("system-media-controls");
+    return ids;
+  }, [miniPlayerSkin, tilingWindowManager, windowControlStyle]);
   const handleWindowControlStyleChange = (style: WindowControlStyle) => {
     const goingNative = style === "native";
     if (goingNative !== nativeWindowControls) {
@@ -1137,19 +1149,23 @@ export function SettingsPage({
           {settingsQuery.trim() ? (
             <SettingsSearchResults
               query={settingsQuery}
+              hiddenIds={unavailableSettingIds}
               onSelect={(tab, title) => {
                 setActiveTab(tab);
                 setSettingsQuery("");
                 requestAnimationFrame(() => {
                   const row = document.getElementById(settingAnchorId(title));
                   if (row) {
-                    row.scrollIntoView({ block: "center", behavior: "auto" });
+                    row.scrollIntoView({ block: "center", behavior: "instant" });
+                    row.focus({ preventScroll: true });
                     return;
                   }
                   /* Section shortcut with no single row: open the tab at its top. */
-                  document
-                    .querySelector('[role="tabpanel"]')
-                    ?.scrollIntoView({ block: "start", behavior: "auto" });
+                  const panel = document.querySelector<HTMLElement>('[role="tabpanel"]');
+                  if (!panel) return;
+                  panel.scrollIntoView({ block: "start", behavior: "instant" });
+                  panel.tabIndex = -1;
+                  panel.focus({ preventScroll: true });
                 });
               }}
             />

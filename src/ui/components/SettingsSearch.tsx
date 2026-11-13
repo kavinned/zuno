@@ -36,11 +36,17 @@ export function SettingsSearch({
 export function SettingsSearchResults({
   query,
   onSelect,
+  hiddenIds,
 }: {
   query: string;
   onSelect: (tab: SettingsTab, title: string) => void;
+  /** Entries whose row cannot render on this platform or skin. */
+  hiddenIds?: ReadonlySet<string>;
 }) {
-  const results = useMemo(() => searchSettings(query), [query]);
+  const results = useMemo(
+    () => searchSettings(query).filter((entry) => !hiddenIds?.has(entry.id)),
+    [query, hiddenIds],
+  );
 
   return (
     <section className="flex flex-col gap-1 rounded-xl border border-border bg-card/50 p-1.5" aria-label="Setting search results">
