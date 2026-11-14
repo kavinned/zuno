@@ -41,6 +41,32 @@ If you find it useful, **starring the repo** genuinely helps.
 
 <br />
 
+## What this fork adds
+
+This is [kavinned/zuno](https://github.com/kavinned/zuno), a fork of
+[noFAYZ/zuno](https://github.com/noFAYZ/zuno). Everything upstream does is still here, plus:
+
+- **Lossless addon sources** — add servers that supply lossless streams, and Zuno substitutes
+  them for YouTube's audio. Sources can be reordered, health-checked and allowed downloads
+  independently.
+- **Animated album covers** — Apple Music's motion artwork on the lyrics screen, including a
+  split cover layout. On by default, with a setting to turn it off.
+- **More lyric sources** — line-synced lyrics from lrc.red and Kugou, ranked alongside LRCLIB,
+  BetterLyrics, SimpMusic and YouTube, matched by title, artist and duration.
+- **Romanization and line swap** — show romaji, pinyin and other transliterations under each
+  line, and move the translation or romanization above the original with one click.
+- **Local VTT lyrics** — a `.vtt` file beside a local audio track is used as its synced lyrics.
+- **Lyric sweep controls** — dim the lines that are not being sung, and switch the sweep effect
+  off independently.
+- **Lyrics cache status** — a badge reports whether the lyrics and their translation came from
+  cache, and translated or romanized lines are kept in memory for instant replays.
+- **One-click playlist add** — a player-bar button adds the current track to a chosen default
+  playlist and shows whether it is already there.
+- **Search tweaks** — the search overlay remembers the last query, starts on songs, and can
+  hide live suggestions until you press Enter.
+
+<br />
+
 ## Screenshots
 
 <table>
