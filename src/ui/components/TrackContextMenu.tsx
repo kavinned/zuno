@@ -54,6 +54,7 @@ import {
 import { ArtistLinks } from "./ArtistLinks";
 import { TagEditor } from "./TagEditor";
 import { useAddonDownloadsAllowed } from "../settings/addonSources";
+import { setLosslessOptOut, useLosslessOptedOut } from "../../internal/losslessOptOut";
 
 interface MenuPosition {
   x: number;
@@ -394,8 +395,17 @@ export function TrackContextMenuProvider({
     }
   };
 
-  const handlePickerKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (addingPlaylistId || playlists.length === 0) return;
+  const restoreLosslessAudio = () => {
+    if (!track) return;
+    const selected = track;
+    setMenuPosition(null);
+    setLosslessOptOut(selected.id, false);
+    if (playerState.currentTrack?.id === selected.id) {
+      void playerController.reloadCurrentTrack();
+    }
+  };
+
+  const handlePickerKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {    if (addingPlaylistId || playlists.length === 0) return;
 
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -529,6 +539,7 @@ export function TrackContextMenuProvider({
   const offlineState = useOfflineState();
   /* Called unconditionally: the menu's open/closed state is not a hook-order condition. */
   const addonDownloadsAllowed = useAddonDownloadsAllowed(track);
+  const selectedTrackIsOptedOut = useLosslessOptedOut(track?.id ?? "");
   const selectedTrackOfflineStatus = track
     ? offlineState.entries[track.id]
       ? "ready"
@@ -672,6 +683,18 @@ export function TrackContextMenuProvider({
                       ? "Remove from download queue"
                       : "Download"}
               </span>
+            </button>
+          )}
+
+          {track?.source === "youtube" && selectedTrackIsOptedOut && (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-foreground transition-colors hover:bg-card disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              onClick={restoreLosslessAudio}
+            >
+              <CheckIcon size={18} aria-hidden="true" className="text-primary" />
+              <span className="flex-1">Use lossless audio again</span>
             </button>
           )}
 
