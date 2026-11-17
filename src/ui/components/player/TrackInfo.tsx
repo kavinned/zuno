@@ -13,6 +13,7 @@ import {
 } from "@/ui/icons";
 import {
   libraryController,
+  playerController,
   shallowEqual,
   useLibraryState,
   usePlayerSelector,
@@ -46,6 +47,7 @@ import {
   usePlaylistMembershipVersion,
 } from "../../../player/playlistMembership";
 import { logInternalError } from "../../../internal/logging";
+import { setLosslessOptOut } from "../../../internal/losslessOptOut";
 import type { Playlist } from "../../../datasource/types";
 
 const NO_LOCAL_PLAYLISTS: Playlist[] = [];
@@ -232,6 +234,7 @@ export function TrackInfo() {
     ? undefined
     : addonSources.find((source) => source.id === addonSourceId)?.label;
   const isFlacTrack = addonFormat?.toLowerCase() === "flac";
+  const canRevertToYouTube = currentTrack.source === "youtube" && substitution !== undefined;
   const isLikePending = canLikeCurrentTrack && libraryState.pendingLikeTrackIds.has(currentTrack.id);
   const isLiked = canLikeCurrentTrack && (libraryState.library?.likedSongs.some(
     (track) => track.id === currentTrack.id,
@@ -277,6 +280,13 @@ export function TrackInfo() {
     event.preventDefault();
     event.stopPropagation();
     setIsDefaultMenuOpen((open) => !open);
+  };
+
+  const handlePlayYouTubeAudio = () => {
+    if (!currentTrack || substitution === undefined) return;
+    setIsAddonInfoOpen(false);
+    setLosslessOptOut(currentTrack.id, true);
+    void playerController.reloadCurrentTrack();
   };
 
   const playlistButtonTitle = isCheckingMembership
@@ -392,6 +402,16 @@ export function TrackInfo() {
                   </span>
                   {addonFormat !== undefined && (
                     <span className="text-[10px] uppercase text-muted-foreground">{addonFormat}</span>
+                  )}
+                  {canRevertToYouTube && (
+                    <button
+                      type="button"
+                      onClick={handlePlayYouTubeAudio}
+                      aria-label={`Play ${currentTrack.title} from YouTube audio`}
+                      className="mt-1 w-full rounded-md bg-card px-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Play YouTube audio
+                    </button>
                   )}
                 </div>
               </FloatingPanel>
