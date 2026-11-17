@@ -408,6 +408,7 @@ export class PlayerController {
     this.finishPlayReport();
     this.discardPrefetched(track.id);
     this.loadedTrackId = null;
+    if (this.streamDiedTrackId === track.id) this.streamDiedTrackId = null;
     this.pendingSeekTime = null;
     this.setState({ status: "loading", error: null });
 

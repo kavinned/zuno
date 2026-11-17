@@ -12,9 +12,12 @@ const EMPTY_SNAPSHOT: string[] = [];
 const getEmptySnapshot = (): string[] => EMPTY_SNAPSHOT;
 
 /** Both windows must agree on what an empty list is; `useSyncExternalStore` needs one identity. */
-function isTrackIdList(value: unknown): value is string[] {
-  return Array.isArray(value)
-    && value.every((item) => typeof item === "string" && item.trim() !== "");
+function isTrackIdList(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function isTrackId(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 let cached: string[] = EMPTY_SNAPSHOT;
@@ -40,14 +43,26 @@ function read(): string[] {
   if (raw === cachedRaw) return cached;
 
   cachedRaw = raw;
-  cached = [...new Set(readLocalJsonSetting(STORAGE_KEY, isTrackIdList) ?? [])];
+  const stored = readLocalJsonSetting(STORAGE_KEY, isTrackIdList) ?? [];
+  /* Per entry, not all-or-nothing: one corrupt id must not cost every valid preference. */
+  cached = [...new Set(stored.filter(isTrackId))];
   return cached;
 }
 
 function write(ids: string[]): void {
-  cached = ids;
-  cachedRaw = JSON.stringify(ids);
   writeLocalJsonSetting(STORAGE_KEY, ids);
+  cached = ids;
+  /*
+   * Trust what the store actually holds, not what it was asked to hold. When `setItem` fails
+   * (quota, locked profile) the raw value is still the pre-write one; `read()` then sees it
+   * equal to `cachedRaw` and hands back this cache, so the click's own reload still respects
+   * the choice. A later successful write retries storage and the durable mirror.
+   */
+  try {
+    cachedRaw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    cachedRaw = undefined;
+  }
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 

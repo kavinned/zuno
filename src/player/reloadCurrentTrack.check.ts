@@ -59,6 +59,7 @@ interface Probe {
   pendingSeekTime: number | null;
   warmedStream: { trackId: string; engine: string; data: StreamData } | null;
   warming: { trackId: string; promise: Promise<void> } | null;
+  streamDiedTrackId: string | null;
   isTabActive: boolean;
   queue: { all: Track[]; set(tracks: Track[], index?: number): void };
   ensureTrackLoaded(track: Track): Promise<void>;
@@ -121,6 +122,7 @@ function make(): { controller: InstanceType<typeof PlayerController>; probe: Pro
   const { controller, probe } = make();
   probe.warmedStream = { trackId: "yt-1", engine: "rust", data: {} };
   probe.warming = { trackId: "yt-1", promise: Promise.resolve() };
+  probe.streamDiedTrackId = "yt-1";
   probe.pendingSeekTime = 12;
   await controller.reloadCurrentTrack();
   equal(events[0], "finishReport", "the outgoing report is finalized before the reload");
@@ -134,6 +136,7 @@ function make(): { controller: InstanceType<typeof PlayerController>; probe: Pro
   equal(probe.warmedStream, null, "the warm slot for this track is discarded");
   equal(probe.warming, null, "an in-flight warm for this track is abandoned");
   check(events.includes("discardPreloaded:yt-1"), "a stale standby for this track is discarded");
+  equal(probe.streamDiedTrackId, null, "the dead-stream memory is cleared for a fresh reload");
   equal(probe.pendingSeekTime, null, "no seek position is carried");
 }
 
