@@ -400,19 +400,19 @@ export class PlayerController {
    * `playTrackById`, this is not a new play: history, queue and metadata stay untouched. It
    * does finalize the outgoing provider report, because the replacement load opens a new one.
    */
-  async reloadCurrentTrack(): Promise<void> {
+  async reloadCurrentTrack(options: { requireSubstitution?: boolean } = {}): Promise<void> {
     const track = this.state.currentTrack;
     if (!track) return;
 
     const requestId = ++this.playTrackRequestId;
     this.finishPlayReport();
-    this.discardWarmedStream(track.id);
+    this.discardPrefetched(track.id);
     this.loadedTrackId = null;
     this.pendingSeekTime = null;
     this.setState({ status: "loading", error: null });
 
     try {
-      await this.ensureTrackLoaded(track);
+      await this.ensureTrackLoaded(track, options);
       if (requestId !== this.playTrackRequestId || this.state.currentTrack?.id !== track.id) return;
 
       if (this.isTabActive) {
@@ -1069,6 +1069,18 @@ export class PlayerController {
     if (this.warmedStream?.trackId === trackId) this.warmedStream = null;
   }
 
+  /**
+   * Drops every prefetched copy of a track whose audio source is about to change under it.
+   *
+   * A warm or standby resolved before an opt-out still holds the rejected FLAC, and one
+   * resolved before an undo still holds YouTube audio: either would defeat the reload.
+   */
+  private discardPrefetched(trackId: string): void {
+    this.discardWarmedStream(trackId);
+    this.abandonWarm(trackId);
+    void this.audioEngine.discardPreloaded(trackId);
+  }
+
   private async handleTrackEnded(): Promise<void> {
     if (this.handlingTrackEnd || !this.isTabActive) return;
     this.handlingTrackEnd = true;
@@ -1323,7 +1335,10 @@ export class PlayerController {
     return shuffled;
   }
 
-  private async ensureTrackLoaded(track: Track): Promise<void> {
+  private async ensureTrackLoaded(
+    track: Track,
+    options: { requireSubstitution?: boolean } = {},
+  ): Promise<void> {
     logInternalDebug("PlayerController.ensureTrackLoaded start", {
       trackId: track.id,
       loadedTrackId: this.loadedTrackId,
@@ -1366,8 +1381,7 @@ export class PlayerController {
        * them. A zero-length fade is the gapless case and swaps in the same tick.
        */
       if (
-        !isLosslessOptedOut(track.id)
-        && this.usesPreloadDeck(track)
+        this.usesPreloadDeck(track)
         && this.audioEngine.hasPreloaded(track.id)
       ) {
         const swapped = await this.audioEngine.transitionToPreloaded(
@@ -1513,7 +1527,7 @@ export class PlayerController {
           throw new Error("Its stream ended early twice.");
         }
         const audioData = useNativeAudio
-          ? warmed ?? await this.dataSource.getStreamData?.(track)
+          ? warmed ?? await this.dataSource.getStreamData?.(track, options)
           : undefined;
         if (useNativeAudio && !audioData) {
           throw new Error("The data source does not support native audio playback.");
@@ -1551,6 +1565,8 @@ export class PlayerController {
           );
         }
       } catch (error) {
+        /* A required source must fail visibly rather than fall back to the one it replaced. */
+        if (options.requireSubstitution) throw error;
         if (canRetryAddonOnNative) {
           /*
            * A downloaded copy is served first, so the retry does not re-resolve a stream that
@@ -1866,7 +1882,7 @@ export class PlayerController {
    */
   private claimWarmedStream(trackId: string): StreamData | undefined {
     if (this.warmedStream?.trackId !== trackId) return undefined;
-    if (isLosslessOptedOut(trackId)) {
+    if (isLosslessOptedOut(trackId) && this.warmedStream.data.addonSubstitution !== undefined) {
       /* The prefetch may already hold the rejected FLAC; a fresh resolve will use YouTube. */
       this.warmedStream = null;
       return undefined;
@@ -2048,7 +2064,6 @@ export class PlayerController {
       && remainingSec <= PREMATURE_END_TOLERANCE_SEC
       && this.playbackOrderMode !== "repeat-one"
       && this.stopAfterTrack !== this.queue.current
-      && !isLosslessOptedOut(next.id)
       && this.audioEngine.hasPreloaded(next.id)
       ? next.id
       : null;

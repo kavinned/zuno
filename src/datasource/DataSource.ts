@@ -76,7 +76,10 @@ export abstract class DataSource {
    * `background` marks a request nobody is waiting on (the next-track warm), which may spend
    * longer on addon substitution than a click can afford.
    */
-  getStreamData?(track: Track, options?: { background?: boolean }): Promise<StreamData>;
+  getStreamData?(
+    track: Track,
+    options?: { background?: boolean; requireSubstitution?: boolean },
+  ): Promise<StreamData>;
   /** Resolves the native-engine path explicitly, bypassing the Rust branch. */
   getNativeStreamData?(track: Track): Promise<StreamData>;
   /**

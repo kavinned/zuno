@@ -87,9 +87,19 @@ function make() {
 {
   const { probe } = make();
   setLosslessOptOut("b", true);
-  probe.warmedStream = { trackId: "b", engine: getAudioEngineMode(), data: { mimeType: "audio/flac" } };
-  equal(probe.claimWarmedStream("b"), undefined, "an opted-out warm is dropped");
+  probe.warmedStream = {
+    trackId: "b",
+    engine: getAudioEngineMode(),
+    data: {
+      mimeType: "audio/flac",
+      addonSubstitution: {} as unknown as NonNullable<StreamData["addonSubstitution"]>,
+    },
+  };
+  equal(probe.claimWarmedStream("b"), undefined, "a stale substituted warm is dropped");
   equal(probe.warmedStream, null, "the dropped warm slot is cleared");
+
+  probe.warmedStream = { trackId: "b", engine: getAudioEngineMode(), data: { mimeType: "audio/mp4" } };
+  check(probe.claimWarmedStream("b") !== undefined, "an opted-out track claims its YouTube warm");
 
   probe.warmedStream = { trackId: "c", engine: getAudioEngineMode(), data: { mimeType: "audio/mp4" } };
   check(probe.claimWarmedStream("c") !== undefined, "a normal warm is still claimed");
@@ -107,8 +117,7 @@ function make() {
   probe.queueGapless(track("c"), 1);
   probe.queueGapless(track("b"), 1);
   equal(armed[0], "c", "gapless arms for a normal next track");
-  equal(armed[1], null, "gapless is disarmed for an opted-out next track");
-  equal(probe.gaplessQueued, false, "the gapless flag is cleared");
+  equal(armed[1], "b", "gapless arms for an opted-out next track whose standby is YouTube");
   setLosslessOptOut("b", false);
 }
 
@@ -132,9 +141,8 @@ function make() {
 
   await probe.ensureTrackLoaded(track("b"));
 
-  check(calls.includes("loadTrack"), "an opted-out track loads normally");
-  check(!calls.includes("usesPreloadDeck"), "the preload deck is not consulted");
-  check(!calls.includes("transition"), "the stale FLAC deck is not transitioned to");
+  check(calls.includes("transition"), "an opted-out track hands over from its YouTube standby");
+  check(!calls.includes("loadTrack"), "the standby makes a fresh load unnecessary");
   setLosslessOptOut("b", false);
 }
 

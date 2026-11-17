@@ -58,6 +58,7 @@ interface Probe {
   loadedTrackId: string | null;
   pendingSeekTime: number | null;
   warmedStream: { trackId: string; engine: string; data: StreamData } | null;
+  warming: { trackId: string; promise: Promise<void> } | null;
   isTabActive: boolean;
   queue: { all: Track[]; set(tracks: Track[], index?: number): void };
   ensureTrackLoaded(track: Track): Promise<void>;
@@ -66,6 +67,7 @@ interface Probe {
     getCurrentTime(): number;
     usesNativeAudio(): boolean;
     usesRustAudio(): boolean;
+    discardPreloaded(trackId: string): void;
   };
 }
 
@@ -101,6 +103,9 @@ function make(): { controller: InstanceType<typeof PlayerController>; probe: Pro
   probe.audioEngine.getCurrentTime = () => 42;
   probe.audioEngine.usesNativeAudio = () => true;
   probe.audioEngine.usesRustAudio = () => false;
+  probe.audioEngine.discardPreloaded = (trackId) => {
+    events.push(`discardPreloaded:${trackId}`);
+  };
   probe.ensureTrackLoaded = async (item) => {
     events.push(`load:${item.id}`);
     probe.loadedTrackId = item.id;
@@ -115,6 +120,7 @@ function make(): { controller: InstanceType<typeof PlayerController>; probe: Pro
 {
   const { controller, probe } = make();
   probe.warmedStream = { trackId: "yt-1", engine: "rust", data: {} };
+  probe.warming = { trackId: "yt-1", promise: Promise.resolve() };
   probe.pendingSeekTime = 12;
   await controller.reloadCurrentTrack();
   equal(events[0], "finishReport", "the outgoing report is finalized before the reload");
@@ -126,6 +132,8 @@ function make(): { controller: InstanceType<typeof PlayerController>; probe: Pro
   equal(probe.state.currentTrack?.id, "yt-1", "the current track is unchanged");
   equal(probe.state.status, "playing", "the track is playing");
   equal(probe.warmedStream, null, "the warm slot for this track is discarded");
+  equal(probe.warming, null, "an in-flight warm for this track is abandoned");
+  check(events.includes("discardPreloaded:yt-1"), "a stale standby for this track is discarded");
   equal(probe.pendingSeekTime, null, "no seek position is carried");
 }
 

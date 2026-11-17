@@ -808,6 +808,16 @@ export class AudioEngine {
     return this.standbyPlayer !== null && this.standbyVideoId === videoId;
   }
 
+  /** Drops a preloaded track whose preferred audio source is no longer wanted. */
+  async discardPreloaded(videoId: string): Promise<void> {
+    if (this.rustStandbyTrackId === videoId) {
+      this.rustStandbyTrackId = null;
+      this.rustStandbyDurationSec = 0;
+      await rustAudio.dropStandby().catch(() => {});
+    }
+    if (this.standbyVideoId === videoId) this.discardStandby();
+  }
+
   /**
    * Hands playback to the preloaded deck, optionally over a crossfade.
    *

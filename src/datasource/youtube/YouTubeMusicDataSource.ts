@@ -6629,7 +6629,10 @@ export class YouTubeMusicDataSource extends DataSource {
     return links;
   }
 
-  async getStreamData(track: Track, options: { background?: boolean } = {}): Promise<StreamData> {
+  async getStreamData(
+    track: Track,
+    options: { background?: boolean; requireSubstitution?: boolean } = {},
+  ): Promise<StreamData> {
     /*
      * Local files always read bytes via local_audio_read, regardless of engine.
      *
@@ -6729,6 +6732,14 @@ export class YouTubeMusicDataSource extends DataSource {
       }
     }
 
+    /*
+     * "Use lossless audio again" asked for the addon stream specifically: quietly serving
+     * YouTube audio would be the same silent wrong-source failure, reversed.
+     */
+    if (options.requireSubstitution) {
+      throw new Error("Lossless audio is not available for this track.");
+    }
+
     const { url: streamUrl, mimeType: streamMimeType } = await this.resolveStreamUrl(track);
 
     logInternalInfo("YouTubeMusicDataSource.getStreamData download start", {
@@ -6771,7 +6782,10 @@ export class YouTubeMusicDataSource extends DataSource {
    * every case Rust already has, or can get, the bytes — asking the webview to carry them first
    * was only ever in service of an `<audio>` element that no longer exists on this path.
    */
-  private async getRustStreamData(track: Track, options: { background?: boolean } = {}): Promise<StreamData> {
+  private async getRustStreamData(
+    track: Track,
+    options: { background?: boolean; requireSubstitution?: boolean } = {},
+  ): Promise<StreamData> {
     if (track.source === "local") {
       if (!track.localPath) {
         throw new Error("Local track path is missing.");
@@ -6826,6 +6840,10 @@ export class YouTubeMusicDataSource extends DataSource {
         addonSubstitution: this.substitutionInfo(match),
         addonStats: match.stream.stats,
       };
+    }
+
+    if (options.requireSubstitution) {
+      throw new Error("Lossless audio is not available for this track.");
     }
 
     const { url, mimeType, cookie } = await this.resolveStreamUrl(track);

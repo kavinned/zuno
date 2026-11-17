@@ -125,7 +125,8 @@ export type PlayerControllerActions = Pick<PlayerController, PlayerControllerMet
 class ActivePlayerController implements PlayerControllerActions {
   loadTrack = async (track: Parameters<PlayerController["loadTrack"]>[0]) =>
     (await tabManager.claimFocusedPlayer()).loadTrack(track);
-  reloadCurrentTrack = () => tabManager.getActivePlayer().reloadCurrentTrack();
+  reloadCurrentTrack = (options?: Parameters<PlayerController["reloadCurrentTrack"]>[0]) =>
+    tabManager.getActivePlayer().reloadCurrentTrack(options);
   playTrackById = async (
     videoId: string,
     playbackQueue?: Parameters<PlayerController["playTrackById"]>[1],

@@ -153,6 +153,15 @@ check(noMatch.rustSource?.kind === "stream", "a substitution miss resolves a You
 equal(noMatch.rustSource?.url, "https://yt.example/audio", "a miss falls back to YouTube");
 equal(noMatch.addonSubstitution, undefined, "a miss records no substitution");
 
+/* Undo means "full quality audio again": a miss must show the normal error, not YouTube. */
+let requiredMissFailed = false;
+try {
+  await noMatchSource.getStreamData(youtubeTrack, { requireSubstitution: true });
+} catch {
+  requiredMissFailed = true;
+}
+check(requiredMissFailed, "a required substitution fails instead of falling back to YouTube");
+
 substitutionCalls = 0;
 const losslessAddonSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
 await losslessAddonSource.getStreamData(track);
@@ -214,6 +223,22 @@ const substitutionFetch = nativeCalls.find(
 check(substitutionFetch !== undefined, "the addon fetch was attempted");
 equal(substitutionFetch.args.contentLength, undefined, "the native substitution fetch omits contentLength");
 equal(substitutionFetch.args.synchronous, true, "the native substitution fetch is synchronous");
+
+/* The same rule on the native engine: a failed addon fetch must surface, not become YouTube. */
+setAudioEngineMode("native");
+let requiredFetchFailed = false;
+const requiredNativeSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+requiredNativeSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+try {
+  await requiredNativeSource.getStreamData(youtubeTrack, { requireSubstitution: true });
+} catch {
+  requiredFetchFailed = true;
+}
+setAudioEngineMode("rust");
+check(requiredFetchFailed, "a required substitution surfaces a failed addon fetch");
 
 /* A background warm is not making anyone wait, so it may spend seconds on a cold addon. */
 substitutionBudgets.length = 0;
