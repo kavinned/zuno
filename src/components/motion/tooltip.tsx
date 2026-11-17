@@ -24,6 +24,7 @@ import { createPortal } from "react-dom";
 import { EASE_OUT } from "@/lib/ease";
 import { useHoverCapable } from "@/lib/hooks/use-hover-capable";
 import { cn } from "@/lib/utils";
+import { tooltipShift } from "./tooltipShift";
 
 type Side = "top" | "right" | "bottom" | "left";
 
@@ -150,15 +151,21 @@ export function Tooltip({
   }, [side]);
 
   // Centred on a trigger near the window edge, a tooltip ran off-screen (#183); nudged back before paint.
+  // Measured from the unshifted anchor, never from the shifted rect: feeding the applied
+  // translate back in made this a fixed-point search that the webview's pixel quantisation
+  // never settled, looping setState until React threw "Maximum update depth exceeded".
   useLayoutEffect(() => {
     const rect = floatingRef.current?.getBoundingClientRect();
-    if (!open || !rect) return;
-    const left = rect.left - shift;
-    const right = rect.right - shift;
-    const maxRight = window.innerWidth - VIEWPORT_MARGIN;
-    const next = right > maxRight ? maxRight - right : left < VIEWPORT_MARGIN ? VIEWPORT_MARGIN - left : 0;
+    if (!open || !rect || !coords) return;
+    const next = tooltipShift(
+      side,
+      coords.left,
+      rect.width,
+      window.innerWidth,
+      VIEWPORT_MARGIN,
+    );
     if (next !== shift) setShift(next);
-  }, [open, coords, shift]);
+  }, [open, coords, shift, side]);
 
   const show = useCallback(() => {
     if (!canHover) return;
