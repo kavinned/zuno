@@ -17,6 +17,7 @@ import { hydrateSortPreferences } from "./ui/settings/sortPreferences";
 import { hydrateTraySettings } from "./ui/settings/tray";
 import { hydrateMediaSessionSettings } from "./ui/settings/mediaSession";
 import { hydrateAudioQualitySettings } from "./internal/audioQuality";
+import { hydrateLosslessOptOuts } from "./internal/losslessOptOut";
 import { hydrateAudioEngineMode } from "./ui/settings/audioEngine";
 import { hydrateEqualizer } from "./ui/settings/equalizer";
 import { hydrateVolumeNormalization } from "./ui/settings/volumeNormalization";
@@ -87,6 +88,7 @@ void Promise.all([
   hydrateVolumeNormalization(),
   hydrateHiddenPlaylists(),
   hydratePinnedPlaylists(),
+  hydrateLosslessOptOuts(),
   // Same reason: a fresh Rust process opens the OS default device until told otherwise.
   hydrateOutputDevice(),
   hydrateYouTubeAccountSettings(),
