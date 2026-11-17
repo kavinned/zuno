@@ -392,6 +392,43 @@ export class PlayerController {
     }
   }
 
+  /**
+   * Reloads the current track through the normal resolution path, starting at zero.
+   *
+   * Used when the listener changes which audio source serves the current track. Unlike
+   * `playTrackById`, this is not a new play: history, queue and metadata stay untouched. It
+   * does finalize the outgoing provider report, because the replacement load opens a new one.
+   */
+  async reloadCurrentTrack(): Promise<void> {
+    const track = this.state.currentTrack;
+    if (!track) return;
+
+    const requestId = ++this.playTrackRequestId;
+    this.finishPlayReport();
+    this.discardWarmedStream(track.id);
+    this.loadedTrackId = null;
+    this.pendingSeekTime = null;
+    this.setState({ status: "loading", error: null });
+
+    try {
+      await this.ensureTrackLoaded(track);
+      if (requestId !== this.playTrackRequestId || this.state.currentTrack?.id !== track.id) return;
+
+      if (this.isTabActive) {
+        const playbackStarted = await this.playLoadedTrack();
+        if (requestId !== this.playTrackRequestId) return;
+        if (!playbackStarted) {
+          this.setState({ status: "paused", error: null });
+          return;
+        }
+      }
+      this.setState({ status: this.isTabActive ? "playing" : "paused", error: null });
+    } catch (error) {
+      if (requestId !== this.playTrackRequestId) return;
+      this.setError(error);
+    }
+  }
+
   async playTrackById(
     videoId: string,
     playbackQueue?: readonly Track[],

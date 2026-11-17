@@ -81,6 +81,7 @@ if (!tabManager.getActiveId()) {
 
 type PlayerControllerMethod =
   | "loadTrack"
+  | "reloadCurrentTrack"
   | "playTrackById"
   | "play"
   | "pause"
@@ -124,6 +125,7 @@ export type PlayerControllerActions = Pick<PlayerController, PlayerControllerMet
 class ActivePlayerController implements PlayerControllerActions {
   loadTrack = async (track: Parameters<PlayerController["loadTrack"]>[0]) =>
     (await tabManager.claimFocusedPlayer()).loadTrack(track);
+  reloadCurrentTrack = () => tabManager.getActivePlayer().reloadCurrentTrack();
   playTrackById = async (
     videoId: string,
     playbackQueue?: Parameters<PlayerController["playTrackById"]>[1],
