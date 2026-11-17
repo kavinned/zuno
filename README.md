@@ -49,6 +49,9 @@ This is [kavinned/zuno](https://github.com/kavinned/zuno), a fork of
 - **Lossless addon sources** — add servers that supply lossless streams, and Zuno substitutes
   them for YouTube's audio. Sources can be reordered, health-checked and allowed downloads
   independently.
+- **Per-track YouTube fallback** — when a lossless match is the wrong recording, the stream
+  popup plays that one video from YouTube audio and remembers the choice; the track menu
+  restores lossless again.
 - **Animated album covers** — Apple Music's motion artwork on the lyrics screen, including a
   split cover layout. On by default, with a setting to turn it off.
 - **More lyric sources** — line-synced lyrics from lrc.red and Kugou, ranked alongside LRCLIB,
