@@ -29,6 +29,7 @@ import type {
     Track,
 } from "../../datasource/types";
 import { LYRICS_SOURCES } from "../../datasource/youtube/lyricsSources";
+import { getFullSizeArtworkUrl } from "../../datasource/youtube/artwork";
 import { FloatingPanel } from "../components/FloatingPanel";
 import { ExternalLinkButton } from "../components/ExternalLinkButton";
 import { logInternalWarn } from "../../internal/logging";
@@ -817,8 +818,12 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                     )}
                 >
                     <TrackArtwork
-                        artworkUrl={track?.artworkUrl}
-                        size={512}
+                        /* The panel shows the cover taller than any size bucket: ask for the
+                           same largest variant the full-size overlay does, or YouTube's own
+                           thumbnail size caps it and the poster renders soft. */
+                        artworkUrl={track?.artworkUrl
+                            ? getFullSizeArtworkUrl(track.artworkUrl)
+                            : undefined}
                         className="size-full"
                         iconSize={64}
                         loading="eager"

@@ -14,6 +14,7 @@ import {
   artworkIdentity,
   getArtworkSizeBucket,
   getArtworkUrlCandidates,
+  getFullSizeArtworkUrl,
   selectArtworkUrl,
 } from "./artwork";
 
@@ -105,6 +106,22 @@ check(
   artworkIdentity("https://lh3.googleusercontent.com/abc=w120-h120-l90-rj")
     === artworkIdentity("//lh3.googleusercontent.com/abc=w544-h544-l90-rj"),
   "size variants of one cover share an identity",
+);
+
+/*
+ * The expanded cover cannot rely on the "original" URL: every YouTube Music artwork URL is
+ * itself a size request, often the item's largest thumbnail (120-544px). A panel that renders
+ * taller than that has to ask for the large variant explicitly or the poster is upscaled.
+ */
+check(
+  getFullSizeArtworkUrl("https://lh3.googleusercontent.com/abc=w120-h120-l90-rj")
+    === "https://lh3.googleusercontent.com/abc=w1200-h1200-l90-rj",
+  "the full-size view upgrades a small thumbnail",
+);
+check(
+  getFullSizeArtworkUrl("https://i.ytimg.com/vi/abc/hqdefault.jpg")
+    === "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+  "urls with no rewrite syntax are left alone",
 );
 check(
   artworkIdentity("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
