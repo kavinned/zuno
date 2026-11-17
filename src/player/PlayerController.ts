@@ -1,6 +1,7 @@
 import type { DataSource, StreamData } from "../datasource/DataSource";
 import type { Lyrics, LyricsQuery, Track } from "../datasource/types";
 import { logInternalDebug, logInternalError, logInternalInfo, logInternalWarn } from "../internal/logging";
+import { isLosslessOptedOut } from "../internal/losslessOptOut";
 import { isPrematureEnd } from "./prematureEnd";
 import { AudioEngine, isEmbedRestrictedPlaybackError } from "./AudioEngine";
 import * as rustAudio from "./rustAudio";
@@ -1364,7 +1365,11 @@ export class PlayerController {
        * handover is a volume ramp between two live players — no load, and no silence between
        * them. A zero-length fade is the gapless case and swaps in the same tick.
        */
-      if (this.usesPreloadDeck(track) && this.audioEngine.hasPreloaded(track.id)) {
+      if (
+        !isLosslessOptedOut(track.id)
+        && this.usesPreloadDeck(track)
+        && this.audioEngine.hasPreloaded(track.id)
+      ) {
         const swapped = await this.audioEngine.transitionToPreloaded(
           track.id,
           this.crossfadeSec * 1000,
@@ -1861,6 +1866,11 @@ export class PlayerController {
    */
   private claimWarmedStream(trackId: string): StreamData | undefined {
     if (this.warmedStream?.trackId !== trackId) return undefined;
+    if (isLosslessOptedOut(trackId)) {
+      /* The prefetch may already hold the rejected FLAC; a fresh resolve will use YouTube. */
+      this.warmedStream = null;
+      return undefined;
+    }
     if (this.warmedStream.engine !== getAudioEngineMode()) {
       /* Resolved under the mode the user has since left; loading it would use the wrong path. */
       this.warmedStream = null;
@@ -2038,6 +2048,7 @@ export class PlayerController {
       && remainingSec <= PREMATURE_END_TOLERANCE_SEC
       && this.playbackOrderMode !== "repeat-one"
       && this.stopAfterTrack !== this.queue.current
+      && !isLosslessOptedOut(next.id)
       && this.audioEngine.hasPreloaded(next.id)
       ? next.id
       : null;
