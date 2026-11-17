@@ -33,7 +33,9 @@ function read(): string[] {
   try {
     raw = localStorage.getItem(STORAGE_KEY);
   } catch {
-    // Storage unavailable: fall through to the empty list.
+    /* Storage unavailable: keep whatever this process already knows. A real clear returns
+       null above, so this only covers an environment where the API itself is missing. */
+    return cached;
   }
   if (raw === cachedRaw) return cached;
 

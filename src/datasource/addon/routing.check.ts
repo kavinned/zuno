@@ -11,6 +11,7 @@ import { YouTubeMusicDataSource } from "../youtube/YouTubeMusicDataSource";
 import type { AddonPlaybackSource, Track } from "../types";
 import type { AddonSubstitutionMatch, ResolvedAddonStream } from "./service";
 import { setAudioEngineMode } from "../../ui/settings/audioEngine";
+import { setLosslessOptOut } from "../../internal/losslessOptOut";
 
 function check(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -223,5 +224,23 @@ warmSource.resolveStreamUrl = async () => ({
 });
 await warmSource.getStreamData(youtubeTrack, { background: true });
 equal(substitutionBudgets[0], 8000, "a background warm asks for the 8 s budget");
+
+/* An opted-out track must not spend an addon search, resolve or probe, warm or click. */
+setLosslessOptOut(youtubeTrack.id, true);
+substitutionCalls = 0;
+const optedOutSource = new YouTubeMusicDataSource(substitutionAddons, () => "lossless");
+optedOutSource.resolveStreamUrl = async () => ({
+  url: "https://yt.example/audio",
+  mimeType: "audio/mp4",
+});
+const optedOut = await optedOutSource.getStreamData(youtubeTrack);
+const optedOutWarm = await optedOutSource.getStreamData(youtubeTrack, { background: true });
+setLosslessOptOut(youtubeTrack.id, false);
+check(optedOut.rustSource?.kind === "stream", "an opted-out track resolves a YouTube stream");
+equal(optedOut.rustSource?.style, undefined, "the YouTube stream keeps the YouTube style");
+equal(optedOut.rustSource?.url, "https://yt.example/audio", "an opted-out track uses YouTube");
+equal(optedOut.addonSubstitution, undefined, "an opted-out track records no substitution");
+equal(optedOutWarm.addonSubstitution, undefined, "an opted-out warm records no substitution");
+equal(substitutionCalls, 0, "an opted-out track never asks the addon");
 
 console.log("addon/routing: ok");

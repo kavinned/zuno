@@ -67,6 +67,7 @@ import {
 } from "./kugou";
 import { parseTtmlTime } from "./ttmlTime";
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
+import { isLosslessOptedOut } from "../../internal/losslessOptOut";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
 import { isTrackDownloaded } from "../../player/offlineStore";
 import { rememberLoudness } from "../../player/loudness";
@@ -552,6 +553,7 @@ export class YouTubeMusicDataSource extends DataSource {
     engine: "rust" | "native",
     options: { background?: boolean } = {},
   ): Promise<AddonSubstitutionMatch | null> {
+    if (isLosslessOptedOut(track.id)) return null;
     if (track.source !== "youtube" || this.addons === undefined) return null;
     if (this.streamingQuality() !== "lossless") return null;
     try {
