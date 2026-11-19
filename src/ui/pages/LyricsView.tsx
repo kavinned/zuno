@@ -14,6 +14,8 @@ import { motion as motionLib } from "motion/react";
 import { useEffectDisabled, useReduceMotion } from "../settings/renderEffects";
 import { cn } from "@/lib/utils";
 import {
+    CheckIcon,
+    ChevronDownIcon,
     CloseIcon,
     FullScreenIcon,
     LyricsIcon,
@@ -56,10 +58,18 @@ import { useLyricsFontScale } from "../settings/lyricsFontScale";
 import {
     TRANSLATION_OFF,
     ROMANIZATION_MODE,
+    TRANSLATION_LANGUAGES,
+    getLanguageLabel,
     useLyricsTranslationLang,
     useLyricsTranslationSwapped,
+    setLyricsTranslationLang,
     setLyricsTranslationSwapped,
 } from "../settings/lyricsTranslation";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/motion/popover";
 import {
     translateLines,
     romanizeLines,
@@ -136,6 +146,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const fontScale = useLyricsFontScale();
     const translationLang = useLyricsTranslationLang();
     const isSwapped = useLyricsTranslationSwapped();
+    const [translationMenuOpen, setTranslationMenuOpen] = useState(false);
     const [translations, setTranslations] = useState<string[] | null>(null);
     const [isTranslationCachedState, setIsTranslationCachedState] = useState<
         boolean | null
@@ -747,10 +758,28 @@ export function LyricsView({ onClose }: LyricsViewProps) {
         : undefined;
     const timingLabel = hasLines ? (isSynced ? "Synced" : "Unsynced") : null;
 
+    const translationEnabled = translationLang !== TRANSLATION_OFF;
     const translationActive =
-        translationLang !== TRANSLATION_OFF &&
+        translationEnabled &&
         (translationLang !== ROMANIZATION_MODE ||
             needsRomanization(lines.map((l) => l.text)));
+    const translationBadgeLabel = !translationEnabled
+        ? "Translate"
+        : !translationActive
+          ? "Romanize"
+          : isSwapped
+            ? translationLang === ROMANIZATION_MODE
+                ? "Romanized first"
+                : "Translated first"
+            : "Original first";
+    const translationMenuItems = [
+        { value: TRANSLATION_OFF, label: "Off" },
+        { value: ROMANIZATION_MODE, label: "Romanize" },
+        ...TRANSLATION_LANGUAGES.map((code) => ({
+            value: code,
+            label: getLanguageLabel(code),
+        })),
+    ];
 
     const lyricsCached =
         isLyricsCachedState !== null
@@ -1180,40 +1209,119 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                             {cacheBadgeLabel}
                         </span>
                     )}
-                    {translationActive && hasLines && (
-                        <button
-                            type="button"
-                            onClick={() =>
-                                setLyricsTranslationSwapped(!isSwapped)
-                            }
-                            className={cn(
-                                "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium tracking-wide transition-colors",
-                                isSwapped
-                                    ? "bg-primary/15 text-primary hover:bg-primary/20"
-                                    : "bg-muted/60 text-muted-foreground hover:bg-card hover:text-foreground",
-                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                            )}
-                            title={
-                                isSwapped
-                                    ? "Switch back: original lyrics on top"
-                                    : "Switch: romanized/translated lyrics on top"
-                            }
-                            aria-label={
-                                isSwapped
-                                    ? "Showing romanized or translated lyrics first. Click to switch to original lyrics on top."
-                                    : "Showing original lyrics first. Click to switch with romanized or translated lyrics."
-                            }
-                            aria-pressed={isSwapped}
+                    {hasLines && (
+                        <Popover
+                            open={translationMenuOpen}
+                            onOpenChange={setTranslationMenuOpen}
+                            side="top"
+                            align="start"
                         >
-                            <SortVerticalIcon size={11} aria-hidden="true" />
-                            <span>
-                                {isSwapped
-                                    ? translationLang === ROMANIZATION_MODE
-                                        ? "Romanized first"
-                                        : "Translated first"
-                                    : "Original first"}
+                            <span
+                                className={cn(
+                                    "inline-flex shrink-0 items-stretch overflow-hidden rounded-full text-[10px] font-medium tracking-wide transition-colors",
+                                    translationActive && isSwapped
+                                        ? "bg-primary/15 text-primary"
+                                        : "bg-muted/60 text-muted-foreground hover:bg-card hover:text-foreground",
+                                )}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (!translationActive) {
+                                            setTranslationMenuOpen(true);
+                                            return;
+                                        }
+                                        setLyricsTranslationSwapped(!isSwapped);
+                                    }}
+                                    onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        setTranslationMenuOpen(true);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-l-full px-2 py-0.5 transition-colors hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    title={
+                                        !translationActive
+                                            ? "Choose lyric translation"
+                                            : isSwapped
+                                              ? "Switch back: original lyrics on top. Right-click to change language."
+                                              : "Switch: romanized/translated lyrics on top. Right-click to change language."
+                                    }
+                                    aria-label={
+                                        !translationActive
+                                            ? "Choose lyric translation."
+                                            : isSwapped
+                                              ? "Showing romanized or translated lyrics first. Click to switch to original lyrics on top."
+                                              : "Showing original lyrics first. Click to switch with romanized or translated lyrics."
+                                    }
+                                    aria-pressed={
+                                        translationActive ? isSwapped : undefined
+                                    }
+                                >
+                                    <SortVerticalIcon
+                                        size={11}
+                                        aria-hidden="true"
+                                    />
+                                    <span>{translationBadgeLabel}</span>
+                                </button>
+                                <PopoverTrigger>
+                                    <button
+                                        type="button"
+                                        onContextMenu={(event) => {
+                                            event.preventDefault();
+                                            setTranslationMenuOpen(true);
+                                        }}
+                                        className="inline-flex items-center rounded-r-full px-1.5 transition-colors hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                        title="Change translation language"
+                                        aria-label="Change translation language"
+                                    >
+                                        <ChevronDownIcon
+                                            size={11}
+                                            aria-hidden="true"
+                                        />
+                                    </button>
+                                </PopoverTrigger>
                             </span>
-                        </button>
+                            <PopoverContent className="w-60 p-1.5">
+                                <div
+                                    role="menu"
+                                    className="flex max-h-72 flex-col overflow-y-auto"
+                                >
+                                    {translationMenuItems.map((item) => {
+                                        const selected =
+                                            translationLang === item.value;
+                                        return (
+                                            <button
+                                                key={item.value}
+                                                type="button"
+                                                role="menuitemradio"
+                                                aria-checked={selected}
+                                                onClick={() => {
+                                                    setLyricsTranslationLang(
+                                                        item.value,
+                                                    );
+                                                    setTranslationMenuOpen(
+                                                        false,
+                                                    );
+                                                }}
+                                                className={cn(
+                                                    "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                                    selected
+                                                        ? "bg-muted text-foreground"
+                                                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                                                )}
+                                            >
+                                                <span>{item.label}</span>
+                                                {selected && (
+                                                    <CheckIcon
+                                                        size={13}
+                                                        aria-hidden="true"
+                                                    />
+                                                )}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </PopoverContent>
+                        </Popover>
                     )}
                 </span>
                 {track && (
